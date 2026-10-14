@@ -2,9 +2,8 @@ import asyncio
 import html
 import json
 import os
-import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from math import asin, ceil, cos, floor, radians, sin, sqrt
 from pathlib import Path
 
@@ -14,7 +13,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from branca.element import MacroElement, Template
-from folium.plugins import HeatMap
+from folium.plugins import HeatMap, MarkerCluster
 
 with (Path(__file__).resolve().parents[1] / "backend" / "data" / "tamil_nadu.geojson").open(
     encoding="utf-8"
@@ -28,6 +27,16 @@ class TacticalTileStyle(MacroElement):
         <style>.leaflet-container {background:#07111d;}
         .leaflet-container .leaflet-tile-pane {filter: brightness(.27)
             saturate(1.9) contrast(1.35) hue-rotate(170deg);}
+        .incident-cluster-icon {align-items:center;background:#11384a;
+            border:2px solid #36cde2;border-radius:50%;box-shadow:0 0 10px #19bdd566;
+            display:flex;height:34px;justify-content:center;width:34px;}
+        .incident-cluster-dot {background:#24c8dc;border:2px solid #e8fbff;
+            border-radius:50%;box-shadow:0 0 8px #24c8dc99;height:12px;width:12px;}
+        .incident-map-marker {background:#24c8dc;border:2px solid #e8fbff;
+            border-radius:50%;box-shadow:0 0 8px #24c8dc99;height:12px;width:12px;}
+        .incident-map-marker.critical {background:#ff5364;box-shadow:0 0 9px #ff536499;}
+        .incident-map-marker.selected {background:#ff354d;border:3px solid #fff;
+            box-shadow:0 0 12px #ff354d;}
         </style>
         {% endmacro %}"""
     )
@@ -38,21 +47,43 @@ class IncidentMarkerRegistry(MacroElement):
         """{% macro script(this, kwargs) %}
         window.crimeRadarMarkers = window.crimeRadarMarkers || {};
         window.crimeRadarMarkers[{{this.event_id_json}}] = {
-          marker: {{this.marker.get_name()}}
+          marker: {{this.marker.get_name()}},
+          normalIcon: {{this.marker.get_name()}}.getIcon(),
+          critical: {{this.critical_json}}
         };
         {{this.marker.get_name()}}.on("click", function () {
           if (window.crimeRadarClearIncidentHeat) {
             window.crimeRadarClearIncidentHeat();
           }
+          if (window.crimeRadarShowContainment) {
+            window.crimeRadarShowContainment(
+              {{this.marker.get_name()}},
+              {{this.critical_json}}
+            );
+          }
         });
         {% endmacro %}"""
     )
 
-    def __init__(self, event_id, marker):
+    def __init__(self, event_id, marker, critical):
         super().__init__()
         self._name = "IncidentMarkerRegistry"
         self.event_id_json = json.dumps(event_id)
         self.marker = marker
+        self.critical_json = json.dumps(critical)
+
+
+class IncidentClusterRegistry(MacroElement):
+    _template = Template(
+        """{% macro script(this, kwargs) %}
+        window.crimeRadarIncidentMarkerCluster = {{this.cluster.get_name()}};
+        {% endmacro %}"""
+    )
+
+    def __init__(self, cluster):
+        super().__init__()
+        self._name = "IncidentClusterRegistry"
+        self.cluster = cluster
 
 
 class IncidentHeatmapRegistry(MacroElement):
@@ -75,9 +106,10 @@ class MapFocusWatcher(MacroElement):
           const map = {{this._parent.get_name()}};
           const city = {{this.city_json}};
           const showTraining = {{this.show_training_json}};
+          const activeAlertCaseId = {{this.active_alert_case_id_json}};
           const viewKey = "crime-radar-map-view";
           const savedView = window.parent.sessionStorage.getItem(viewKey);
-          if (savedView) {
+          if (savedView && !activeAlertCaseId) {
             const view = JSON.parse(savedView);
             if (view.city === city) {
               map.setView(view.center, view.zoom, {animate: false});
@@ -102,12 +134,27 @@ class MapFocusWatcher(MacroElement):
               map.removeLayer(trainingHeatLayer);
             }
           };
-          const trainingLayer = L.layerGroup().addTo(map);
+          window.crimeRadarShowContainment = function (marker, critical) {
+            if (window.crimeRadarContainmentRing) {
+              map.removeLayer(window.crimeRadarContainmentRing);
+              window.crimeRadarContainmentRing = null;
+            }
+            if (critical) {
+              window.crimeRadarContainmentRing = L.circle(marker.getLatLng(), {
+                radius: 1500,
+                color: "#ff354d",
+                weight: 2,
+                fillColor: "#ff354d",
+                fillOpacity: 0.08
+              }).addTo(map).bindTooltip("Critical containment zone · 1.50 km radius");
+            }
+          };
+          const incidentCluster = window.crimeRadarIncidentMarkerCluster;
           const trainingHeatLayer = showTraining
             ? L.heatLayer([], {
-                radius: 24,
-                blur: 20,
-                minOpacity: 0.35,
+                radius: 15,
+                blur: 12,
+                minOpacity: 0.18,
                 gradient: {
                   0.25: "#168de2",
                   0.55: "#22bad1",
@@ -128,7 +175,7 @@ class MapFocusWatcher(MacroElement):
                 "background:#101c29;color:#ffd06e;padding:7px 10px;" +
                 "border:1px solid #6a5527;border-radius:5px;" +
                 "font:700 12px sans-serif";
-              this.container.textContent = "STREAMED TRAINING: 0 · NOT LIVE";
+              this.container.textContent = "NEW REPORTS: 0";
               return this.container;
             };
             counter.addTo(map);
@@ -145,47 +192,55 @@ class MapFocusWatcher(MacroElement):
               incoming.forEach(function (incident) {
                 const id = String(incident.event_id);
                 activeIds.add(id);
-                if (trainingMarkers[id]) return;
+                if (trainingMarkers[id]) {
+                  const existingMarker = window.crimeRadarMarkers[id] &&
+                    window.crimeRadarMarkers[id].marker;
+                  if (existingMarker) {
+                    existingMarker.setPopupContent(incident.popup_html);
+                  }
+                  return;
+                }
                 const position = [incident.latitude, incident.longitude];
                 const critical = incident.priority === "CRITICAL";
-                const group = L.layerGroup().addTo(trainingLayer);
-                const marker = L.circleMarker(position, {
-                  radius: 7,
-                  color: "#22bad1",
-                  weight: 2,
-                  fillColor: "#22bad1",
-                  fillOpacity: 0.95
+                const normalIcon = L.divIcon({
+                  className: "",
+                  html: '<div class="incident-map-marker' +
+                    (critical ? ' critical' : '') + '"></div>',
+                  iconSize: [18, 18],
+                  iconAnchor: [9, 9]
+                });
+                const marker = L.marker(position, {
+                  icon: normalIcon,
+                  title: incident.incident_type
                 }).bindPopup(incident.popup_html);
-                marker.on("click", clearIncidentHeat);
-                marker.addTo(group);
-                if (critical) {
-                  L.circle(position, {
-                    radius: 1500,
-                    color: "#ff354d",
-                    weight: 2,
-                    fillColor: "#ff354d",
-                    fillOpacity: 0.08
-                  }).addTo(group);
-                }
-                trainingMarkers[id] = group;
-                window.crimeRadarMarkers[id] = {
+                marker.on("click", function () {
+                  clearIncidentHeat();
+                  window.crimeRadarShowContainment(marker, critical);
+                });
+                incidentCluster.addLayer(marker);
+                trainingMarkers[id] = {
                   marker: marker
+                };
+                window.crimeRadarMarkers[id] = {
+                  marker: marker,
+                  normalIcon: normalIcon,
+                  critical: critical
                 };
               });
               Object.keys(trainingMarkers).forEach(function (id) {
                 if (activeIds.has(id)) return;
-                trainingMarkers[id].remove();
+                incidentCluster.removeLayer(trainingMarkers[id].marker);
                 delete trainingMarkers[id];
                 delete window.crimeRadarMarkers[id];
               });
               counter.getContainer().textContent =
-                "STREAMED TRAINING: " + incoming.length + " · NOT LIVE";
+                "NEW REPORTS: " + incoming.length;
               trainingHeatLayer.setLatLngs(incoming.map(function (incident) {
                 return [incident.latitude, incident.longitude];
               }));
               lastPayload = payload;
             }
-            const focus = params.get("focus") || "";
+            const focus = activeAlertCaseId || params.get("focus") || "";
             const focusToken = focus + "|" + (params.get("focus_nonce") || "");
             if (!focus || focusToken === lastFocus) return;
             const entry = window.crimeRadarMarkers &&
@@ -195,15 +250,19 @@ class MapFocusWatcher(MacroElement):
               const previousId = window.crimeRadarSelectedMarkerId;
               const previouslySelected = window.crimeRadarMarkers[previousId];
               if (previouslySelected && previousId !== focus) {
-                previouslySelected.marker.remove();
+                previouslySelected.marker.setIcon(previouslySelected.normalIcon);
               }
               const marker = entry.marker;
-              marker.setStyle({
-                color: "#ffffff",
-                weight: 3,
-                fillColor: "#ff354d",
-                fillOpacity: 1
-              });
+              window.crimeRadarShowContainment(
+                marker,
+                entry.critical
+              );
+              marker.setIcon(L.divIcon({
+                className: "",
+                html: '<div class="incident-map-marker selected"></div>',
+                iconSize: [22, 22],
+                iconAnchor: [11, 11]
+              }));
               window.crimeRadarSelectedMarkerId = focus;
               lastFocus = focusToken;
               map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 16), {
@@ -217,11 +276,12 @@ class MapFocusWatcher(MacroElement):
         {% endmacro %}"""
     )
 
-    def __init__(self, city, show_training):
+    def __init__(self, city, show_training, active_alert_case_id=None):
         super().__init__()
         self._name = "MapFocusWatcher"
         self.city_json = json.dumps(city)
         self.show_training_json = json.dumps(show_training)
+        self.active_alert_case_id_json = json.dumps(active_alert_case_id)
 
 
 st.set_page_config(
@@ -239,6 +299,43 @@ def haversine(lon1, lat1, lon2, lat2):
     return 6371 * 2 * asin(sqrt(a))
 
 
+def nearest_training_station(latitude, longitude, stations):
+    if not stations:
+        return None, None
+    station = min(
+        stations,
+        key=lambda item: haversine(
+            item["longitude"], item["latitude"], longitude, latitude
+        ),
+    )
+    distance_km = haversine(
+        station["longitude"], station["latitude"], longitude, latitude
+    )
+    return station, distance_km
+
+
+def nearest_training_stations(latitude, longitude, stations, max_count=5, exclude_station_id=None):
+    if not stations:
+        return []
+    sorted_stations = sorted(
+        stations,
+        key=lambda item: haversine(
+            item["longitude"], item["latitude"], longitude, latitude
+        ),
+    )
+    results = []
+    for station in sorted_stations:
+        if station["station_id"] == exclude_station_id:
+            continue
+        distance_km = haversine(
+            station["longitude"], station["latitude"], longitude, latitude
+        )
+        results.append((station, distance_km))
+        if len(results) >= max_count:
+            break
+    return results
+
+
 def focus_incident_on_map(event_id):
     st.session_state["map_focus_event_id"] = str(event_id)
     st.query_params["focus"] = str(event_id)
@@ -250,13 +347,13 @@ def is_training_status(status):
 
 
 def display_incident_status(status):
-    return "TRAINING EXERCISE" if is_training_status(status) else str(status)
+    return "OPEN" if is_training_status(status) else str(status)
 
 
 def display_incident_type(incident_type, is_training):
     value = str(incident_type)
     if is_training and value.strip().upper() == "SIMULATED DEMO EVENT":
-        return "Training incident"
+        return "INCIDENT"
     return value
 
 
@@ -270,44 +367,19 @@ def display_incident_address(address, is_training):
 
 def display_event_id(event_id, is_training):
     value = str(event_id)
-    if is_training and value.upper().startswith(("SIM-", "DEMO-")):
-        return f"TRAINING-{value.rsplit('-', 1)[-1]}"
+    if is_training and value.upper().startswith(("SIM-", "DEMO-", "TRAIN-")):
+        return f"TN-{value.rsplit('-', 1)[-1]}"
     return value
 
 
-def create_training_incident():
-    locations = [
-        ("T. Nagar", 13.0418, 80.2337),
-        ("Egmore", 13.0604, 80.2496),
-        ("Mylapore", 13.0337, 80.2702),
-        ("Anna Nagar", 13.0850, 80.2101),
-        ("Guindy", 13.0108, 80.2150),
-        ("Perambur", 13.1143, 80.2326),
-        ("Marina Beach", 13.0475, 80.2824),
-        ("Little Mount", 13.0067, 80.2206),
-    ]
-    area, latitude, longitude = random.choice(locations)
-    incident_type, priority = random.choice(
-        [
-            ("BURGLARY", "CRITICAL"),
-            ("ASSAULT", "CRITICAL"),
-            ("THEFT", "HIGH"),
-            ("ROBBERY", "HIGH"),
-            ("VEHICLE THEFT", "MEDIUM"),
-        ]
+def display_incident_time(value):
+    timestamp = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(timestamp):
+        return "Time unavailable"
+    local_time = timestamp.to_pydatetime().astimezone(
+        timezone(timedelta(hours=5, minutes=30))
     )
-    return {
-        "event_id": f"TRAIN-LIVE-{time.time_ns()}",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": priority,
-        "incident_type": incident_type,
-        "latitude": latitude + random.uniform(-0.002, 0.002),
-        "longitude": longitude + random.uniform(-0.002, 0.002),
-        "address": area,
-        "is_demo": True,
-        "is_stream": True,
-    }
+    return local_time.strftime("%d %b %Y, %I:%M %p IST")
 
 
 def training_map_sync_html(training_cases):
@@ -322,123 +394,11 @@ def training_map_sync_html(training_cases):
 
 
 def display_patrol_status(status):
-    return "TRAINING EXERCISE · AVAILABLE" if is_training_status(status) else str(status)
+    return "AVAILABLE" if is_training_status(status) else str(status)
 
 
 API_URL = os.getenv("CRIME_RADAR_API_URL", "http://127.0.0.1:8000").rstrip("/")
-REFRESH_SECONDS = 5
-TRAINING_CASE_INTERVAL_SECONDS = 10
-MAX_TRAINING_MAP_CASES = 20
-DEMO_INCIDENTS = [
-    {
-        "event_id": "TRAIN-TN-001",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": "CRITICAL",
-        "incident_type": "BURGLARY",
-        "latitude": 13.0418,
-        "longitude": 80.2337,
-        "address": "T. Nagar, Chennai",
-        "is_demo": True,
-    },
-    {
-        "event_id": "TRAIN-TN-002",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": "HIGH",
-        "incident_type": "THEFT",
-        "latitude": 13.0604,
-        "longitude": 80.2496,
-        "address": "Egmore, Chennai",
-        "is_demo": True,
-    },
-    {
-        "event_id": "TRAIN-TN-003",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": "CRITICAL",
-        "incident_type": "ASSAULT",
-        "latitude": 13.0337,
-        "longitude": 80.2702,
-        "address": "Mylapore, Chennai",
-        "is_demo": True,
-    },
-    {
-        "event_id": "TRAIN-TN-004",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": "MEDIUM",
-        "incident_type": "VEHICLE THEFT",
-        "latitude": 13.0850,
-        "longitude": 80.2101,
-        "address": "Anna Nagar, Chennai",
-        "is_demo": True,
-    },
-    {
-        "event_id": "TRAIN-TN-005",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": "HIGH",
-        "incident_type": "ROBBERY",
-        "latitude": 13.0108,
-        "longitude": 80.2150,
-        "address": "Guindy, Chennai",
-        "is_demo": True,
-    },
-    {
-        "event_id": "TRAIN-TN-006",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": "CRITICAL",
-        "incident_type": "BURGLARY",
-        "latitude": 13.1143,
-        "longitude": 80.2326,
-        "address": "Perambur, Chennai",
-        "is_demo": True,
-    },
-    {
-        "event_id": "TRAIN-TN-007",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": "MEDIUM",
-        "incident_type": "THEFT",
-        "latitude": 13.0475,
-        "longitude": 80.2824,
-        "address": "Marina Beach, Chennai",
-        "is_demo": True,
-    },
-    {
-        "event_id": "TRAIN-TN-008",
-        "timestamp": datetime.utcnow(),
-        "status": "TRAINING EXERCISE",
-        "priority": "HIGH",
-        "incident_type": "ROBBERY",
-        "latitude": 13.0067,
-        "longitude": 80.2206,
-        "address": "Little Mount, Chennai",
-        "is_demo": True,
-    },
-]
-DEMO_PATROL_UNITS = [
-    {
-        "unit_id": "SIM-TN-UNIT-201",
-        "status": "TRAINING EXERCISE · AVAILABLE",
-        "latitude": 13.0460,
-        "longitude": 80.2290,
-    },
-    {
-        "unit_id": "SIM-TN-UNIT-202",
-        "status": "TRAINING EXERCISE · AVAILABLE",
-        "latitude": 13.0370,
-        "longitude": 80.2680,
-    },
-    {
-        "unit_id": "SIM-TN-UNIT-203",
-        "status": "TRAINING EXERCISE · AVAILABLE",
-        "latitude": 13.1120,
-        "longitude": 80.2320,
-    },
-]
+REFRESH_SECONDS = 2
 
 
 def get_json(path, params=None):
@@ -449,11 +409,12 @@ def get_json(path, params=None):
 
 async def load_dashboard_data():
     incidents = await asyncio.to_thread(get_json, "/api/v1/active-incidents")
-    units, sources = await asyncio.gather(
+    units, sources, stations = await asyncio.gather(
         asyncio.to_thread(get_json, "/api/v1/patrol-units"),
         asyncio.to_thread(get_json, "/api/v1/sources"),
+        asyncio.to_thread(get_json, "/api/v1/police-stations"),
     )
-    return incidents, units, sources[0]
+    return incidents, units, sources[0], stations
 
 
 st.markdown(
@@ -497,6 +458,58 @@ st.markdown(
         border-radius: 8px;
         box-shadow: 0 0 22px rgba(8, 184, 211, .08);
     }
+    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="700"])
+        > div[data-testid="column"]:first-child {
+        position: fixed !important;
+        left: -336px;
+        top: 72px;
+        bottom: 16px;
+        height: calc(100vh - 88px);
+        width: min(360px, 88vw) !important;
+        z-index: 10000;
+        overflow-y: auto;
+        overscroll-behavior-y: contain;
+        scrollbar-width: thin;
+        scrollbar-color: #31586a #091522;
+        -webkit-overflow-scrolling: touch;
+        padding: 12px;
+        background: #091522;
+        border: 1px solid #1b3a4d;
+        border-left: 0;
+        border-radius: 0 10px 10px 0;
+        box-shadow: 8px 0 24px rgba(0, 0, 0, .38);
+        transition: left .24s cubic-bezier(.2, .8, .2, 1);
+    }
+    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="700"])
+        > div[data-testid="column"]:first-child:hover {
+        left: 0;
+    }
+    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="700"])
+        > div[data-testid="column"]:first-child::after {
+        content: "FILTERS";
+        position: absolute;
+        right: -25px;
+        top: 50%;
+        padding: 10px 5px;
+        color: #b7eaf1;
+        background: #123044;
+        border: 1px solid #1b3a4d;
+        border-left: 0;
+        border-radius: 0 6px 6px 0;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        writing-mode: vertical-rl;
+        pointer-events: auto;
+    }
+    @media (max-width: 700px) {
+        div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="700"])
+            > div[data-testid="column"]:first-child {
+            width: min(340px, 92vw) !important;
+            height: calc(100vh - 88px);
+            left: calc(-min(340px, 92vw) + 24px);
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -518,11 +531,14 @@ with header_right:
 
 st.divider()
 
+refresh_started_at = time.monotonic()
 try:
-    incidents_data, units_data, source_status = asyncio.run(load_dashboard_data())
+    incidents_data, units_data, source_status, police_stations = asyncio.run(
+        load_dashboard_data()
+    )
     data_error = None
 except (requests.RequestException, ValueError, KeyError) as exc:
-    incidents_data, units_data = [], []
+    incidents_data, units_data, police_stations = [], [], []
     data_error = str(exc)
 
 if data_error:
@@ -532,57 +548,26 @@ else:
     with left_panel:
         st.markdown('<div class="radar-panel"><h3>Predictive Analytics</h3></div>', unsafe_allow_html=True)
         show_demo_data = st.toggle(
-            "Show training exercise",
+            "Show incidents",
             value=True,
-            help="Training exercise locations are not live incidents or police positions.",
+            help="Display incidents and available patrol markers.",
         )
 
     incoming_df = pd.DataFrame(incidents_data)
     if not incoming_df.empty:
         incoming_df["is_demo"] = incoming_df["status"].map(is_training_status)
-        incoming_df["is_stream"] = False
         agency_df = incoming_df[~incoming_df["is_demo"]].copy()
         persisted_demo_df = incoming_df[incoming_df["is_demo"]].copy()
     else:
         agency_df = incoming_df
         persisted_demo_df = incoming_df
-    training_stream_incidents = st.session_state.setdefault(
-        "training_stream_incidents", []
-    )
-    for incident in training_stream_incidents:
-        incident["is_demo"] = True
-        incident["is_stream"] = True
-    training_clock = time.monotonic()
-    if show_demo_data:
-        last_training_case_at = st.session_state.setdefault(
-            "last_training_case_at", training_clock
-        )
-        if training_clock - last_training_case_at >= TRAINING_CASE_INTERVAL_SECONDS:
-            training_stream_incidents.append(create_training_incident())
-            del training_stream_incidents[:-MAX_TRAINING_MAP_CASES]
-            st.session_state["last_training_case_at"] = training_clock
-            last_training_case_at = training_clock
-    else:
-        st.session_state["last_training_case_at"] = training_clock
-
     demo_df = (
-        pd.concat(
-            [
-                persisted_demo_df,
-                pd.DataFrame(DEMO_INCIDENTS),
-                pd.DataFrame(training_stream_incidents),
-            ],
-            ignore_index=True,
-        )
+        persisted_demo_df
         if show_demo_data
         else pd.DataFrame()
     )
     df = pd.concat([agency_df, demo_df], ignore_index=True)
     if not df.empty:
-        if "is_stream" not in df:
-            df["is_stream"] = False
-        else:
-            df["is_stream"] = df["is_stream"].fillna(False).astype(bool)
         training_rows = df["is_demo"].astype(bool)
         df.loc[training_rows, "event_id"] = df.loc[training_rows, "event_id"].map(
             lambda event_id: display_event_id(event_id, True)
@@ -596,6 +581,23 @@ else:
         df.loc[training_rows, "address"] = df.loc[training_rows, "address"].map(
             lambda address: display_incident_address(address, True)
         )
+        df["_display_timestamp"] = pd.to_datetime(
+            df["timestamp"], errors="coerce", utc=True
+        )
+        builtin_training_rows = df["event_id"].astype(str).str.startswith("TRAIN-TN-")
+        df.loc[builtin_training_rows, "_display_timestamp"] = pd.Timestamp(
+            "1970-01-01", tz="UTC"
+        )
+        df = (
+            df.sort_values(
+                "_display_timestamp",
+                ascending=False,
+                na_position="last",
+                kind="stable",
+            )
+            .drop(columns="_display_timestamp")
+            .reset_index(drop=True)
+        )
     current_critical = (
         df.loc[df["priority"].astype("string").str.upper().eq("CRITICAL")]
         .to_dict(orient="records")
@@ -603,6 +605,29 @@ else:
         else []
     )
     current_critical_ids = {str(incident["event_id"]) for incident in current_critical}
+    alert_case_queue = st.session_state.get("critical_alert_case_queue")
+    observed_critical_ids = st.session_state.get("observed_critical_incident_ids")
+    if alert_case_queue is None or observed_critical_ids is None:
+        alert_case_queue = [
+            str(incident["event_id"]) for incident in current_critical
+        ]
+        observed_critical_ids = current_critical_ids.copy()
+    else:
+        alert_case_queue = [
+            event_id
+            for event_id in alert_case_queue
+            if event_id in current_critical_ids
+        ]
+        newly_observed_critical_ids = [
+            str(incident["event_id"])
+            for incident in current_critical
+            if str(incident["event_id"]) not in observed_critical_ids
+        ]
+        alert_case_queue.extend(newly_observed_critical_ids)
+        observed_critical_ids.update(current_critical_ids)
+    st.session_state["critical_alert_case_queue"] = alert_case_queue
+    st.session_state["observed_critical_incident_ids"] = observed_critical_ids
+
     known_critical_ids = st.session_state.get("known_critical_incident_ids")
     if known_critical_ids is None:
         newly_detected_critical = []
@@ -619,19 +644,16 @@ else:
         is_training = bool(incident["is_demo"])
         incident_type = display_incident_type(incident["incident_type"], is_training)
         address = display_incident_address(incident["address"], is_training)
-        prefix = "TRAINING EXERCISE · " if is_training else ""
         st.toast(
-            f"{prefix}{incident_type} near {address}",
+            f"{incident_type} near {address}",
             icon="🚨",
         )
 
     simulated_units = [
         unit
         for unit in units_data
-        if is_training_status(unit["status"])
+        if show_demo_data or not is_training_status(unit["status"])
     ]
-    if show_demo_data and not simulated_units:
-        simulated_units = DEMO_PATROL_UNITS
 
     demo_critical_incidents = (
         df.loc[df["is_demo"] & df["priority"].astype("string").str.upper().eq("CRITICAL")]
@@ -640,15 +662,45 @@ else:
         else []
     )
     unit_by_id = {str(unit["unit_id"]): unit for unit in simulated_units}
-    existing_assignments = st.session_state.get("demo_dispatch_assignments", {})
-    active_incident_ids = {str(incident["event_id"]) for incident in demo_critical_incidents}
-    assignments = {}
+    station_by_id = {
+        station["station_id"]: station for station in police_stations
+    }
+    active_incident_ids = {
+        str(incident["event_id"]) for incident in demo_critical_incidents
+    }
+    existing_manual_assignments = st.session_state.get(
+        "manual_training_dispatch_assignments", {}
+    )
+    manual_assignments = {}
     used_unit_ids = set()
+    for event_id, assignment in existing_manual_assignments.items():
+        event_id = str(event_id)
+        station_id = str(assignment.get("station_id", ""))
+        unit_id = str(assignment.get("unit_id", ""))
+        if (
+            event_id in active_incident_ids
+            and station_id in station_by_id
+            and unit_id in unit_by_id
+            and unit_id not in used_unit_ids
+        ):
+            manual_assignments[event_id] = {
+                "station_id": station_id,
+                "unit_id": unit_id,
+            }
+            used_unit_ids.add(unit_id)
+    st.session_state["manual_training_dispatch_assignments"] = manual_assignments
+
+    existing_assignments = st.session_state.get("demo_dispatch_assignments", {})
+    assignments = {
+        event_id: assignment["unit_id"]
+        for event_id, assignment in manual_assignments.items()
+    }
     for event_id, unit_id in existing_assignments.items():
         event_id = str(event_id)
         unit_id = str(unit_id)
         if (
             event_id in active_incident_ids
+            and event_id not in assignments
             and unit_id in unit_by_id
             and unit_id not in used_unit_ids
         ):
@@ -663,14 +715,22 @@ else:
     available_units = [
         unit for unit_id, unit in unit_by_id.items() if unit_id not in used_unit_ids
     ]
+    station_by_unit_id = {
+        station["unit_id"]: station for station in police_stations
+    }
+
+    def station_distance(unit, incident):
+        station = station_by_unit_id.get(str(unit["unit_id"]), unit)
+        return haversine(
+            station["longitude"],
+            station["latitude"],
+            incident["longitude"],
+            incident["latitude"],
+        )
+
     candidate_assignments = sorted(
         (
-            haversine(
-                unit["longitude"],
-                unit["latitude"],
-                incident["longitude"],
-                incident["latitude"],
-            ),
+            station_distance(unit, incident),
             str(incident["event_id"]),
             str(unit["unit_id"]),
         )
@@ -686,11 +746,28 @@ else:
 
     st.session_state["demo_dispatch_assignments"] = assignments
     dispatch_by_incident = {}
-    for incident in demo_critical_incidents:
+    for incident in current_critical:
         event_id = str(incident["event_id"])
         unit_id = assignments.get(event_id)
         if unit_id is not None:
             unit = unit_by_id[unit_id]
+            manual_assignment = manual_assignments.get(event_id)
+            station = (
+                station_by_id[manual_assignment["station_id"]]
+                if manual_assignment
+                else next(
+                    (
+                        item
+                        for item in police_stations
+                        if item["unit_id"] == unit_id
+                    ),
+                    None,
+                )
+            )
+            if station is None:
+                station, _ = nearest_training_station(
+                    incident["latitude"], incident["longitude"], police_stations
+                )
             dispatch_by_incident[event_id] = {
                 "unit": unit,
                 "distance_km": haversine(
@@ -699,7 +776,41 @@ else:
                     incident["longitude"],
                     incident["latitude"],
                 ),
+                "station": station,
+                "station_distance_km": (
+                    haversine(
+                        station["longitude"],
+                        station["latitude"],
+                        incident["longitude"],
+                        incident["latitude"],
+                    )
+                    if station is not None
+                    else None
+                ),
+                "nearby_stations": nearest_training_stations(
+                    incident["latitude"], incident["longitude"], police_stations, max_count=1,
+                    exclude_station_id=station["station_id"] if station else None
+                ),
+                "manual": event_id in manual_assignments,
             }
+        else:
+            station, station_distance_km = nearest_training_station(
+                incident["latitude"], incident["longitude"], police_stations
+            )
+            nearby_stations = nearest_training_stations(
+                incident["latitude"], incident["longitude"], police_stations, max_count=1,
+                exclude_station_id=station["station_id"] if station else None
+            )
+            dispatch_by_incident[event_id] = {
+                "unit": None,
+                "distance_km": None,
+                "station": station,
+                "station_distance_km": station_distance_km,
+                "nearby_stations": nearby_stations,
+                "manual": False,
+            }
+        if event_id in dispatch_by_incident:
+            dispatch_by_incident[event_id]["manual"] = event_id in manual_assignments
 
     if newly_assigned:
         notified_incidents = st.session_state.setdefault("demo_dispatch_notified", set())
@@ -713,16 +824,26 @@ else:
             dispatch = dispatch_by_incident[event_id]
             incident_type = display_incident_type(incident["incident_type"], True)
             incident_address = display_incident_address(incident["address"], True)
+            station_message = (
+                f"from {dispatch['station']['name']} "
+                f"({dispatch['station_distance_km']:.2f} km). "
+                if dispatch["station"] is not None
+                else "No station location is available. "
+            )
             st.toast(
-                f"TRAINING EXERCISE — {incident_type} near {incident_address}. "
-                f"{dispatch['unit']['unit_id']} assigned "
-                f"({dispatch['distance_km']:.2f} km). No police contacted.",
+                f"{incident_type} near {incident_address}. "
+                f"{str(dispatch['unit']['unit_id']).replace('SIM-TN-UNIT-', 'UNIT-')} assigned "
+                f"{station_message}"
+                "No police contacted.",
                 icon="🚨",
             )
         notified_incidents.update(newly_assigned)
 
     incident_types = sorted(df["incident_type"].dropna().unique()) if not df.empty else []
     priorities = sorted(df["priority"].dropna().unique()) if not df.empty else []
+    incident_statuses = (
+        sorted(df["status"].dropna().astype(str).unique()) if not df.empty else []
+    )
 
     with left_panel:
         critical_count = int((df["priority"].str.upper() == "CRITICAL").sum()) if not df.empty else 0
@@ -734,7 +855,7 @@ else:
             else 0
         )
         real_critical_count = critical_count - demo_critical_count
-        alert_level = "TRAINING ALERT" if demo_critical_count else (
+        alert_level = "HIGH RISK" if demo_critical_count else (
             "HIGH RISK" if real_critical_count else "MONITORING"
         )
         st.metric("Current alert level", alert_level)
@@ -748,21 +869,29 @@ else:
             else "Awaiting telemetry"
         )
         st.markdown(
-            f"**{'Training event' if demo_count and not real_count else 'Latest report'}:** "
+            f"**Latest report:** "
             f"{html.escape(latest_incident_type)}"
         )
         st.caption(
-            f"Agency: {real_count} · Training: {demo_count} · "
+            f"Agency: {real_count} · Incidents: {demo_count} · "
             f"Critical: {critical_count} · Auto-refresh active"
         )
         if show_demo_data:
             st.caption(
-                f"New training cases appear periodically · "
-                f"up to {MAX_TRAINING_MAP_CASES} generated cases retained"
+                "Incident records loaded from the database"
             )
-        st.markdown('<div class="radar-panel"><h3>Filters & Layers</h3></div>', unsafe_allow_html=True)
+
+    with left_panel:
+        st.markdown(
+            '<div class="radar-panel"><h3>Filters & Layers</h3></div>', unsafe_allow_html=True)
+        address_search = st.text_input(
+            "Search address",
+            placeholder="Search address or area",
+            key="incident-address-search",
+        )
         selected_type = st.selectbox("Incident type", ["All types", *incident_types])
         selected_priority = st.selectbox("Priority", ["All priorities", *priorities])
+        selected_status = st.selectbox("Status", ["All statuses", *incident_statuses])
         show_patrol_units = st.checkbox("Show patrol telemetry", value=True)
 
     filtered_df = df.copy()
@@ -770,20 +899,56 @@ else:
         filtered_df = filtered_df[filtered_df["incident_type"] == selected_type]
     if selected_priority != "All priorities":
         filtered_df = filtered_df[filtered_df["priority"] == selected_priority]
+    if selected_status != "All statuses":
+        filtered_df = filtered_df[filtered_df["status"].astype(str) == selected_status]
+    if address_search.strip():
+        filtered_df = filtered_df[
+            filtered_df["address"]
+            .astype("string")
+            .str.contains(address_search.strip(), case=False, regex=False, na=False)
+        ]
 
+    current_alert_id = alert_case_queue[0] if alert_case_queue else None
+    current_alert_incident = (
+        next(
+            (
+                incident
+                for incident in current_critical
+                if str(incident["event_id"]) == current_alert_id
+            ),
+            None,
+        )
+        if current_alert_id is not None
+        else None
+    )
     focused_event_id = st.session_state.get("map_focus_event_id")
     map_df = filtered_df.copy()
-    if focused_event_id is not None and not df.empty:
-        focused_rows = df[df["event_id"].astype(str) == str(focused_event_id)]
-        if not focused_rows.empty:
-            if not map_df["event_id"].astype(str).eq(str(focused_event_id)).any():
-                map_df = pd.concat([map_df, focused_rows], ignore_index=True)
+    map_focus_ids = {
+        str(event_id)
+        for event_id in (focused_event_id, current_alert_id)
+        if event_id is not None
+    }
+    for event_id in map_focus_ids:
+        if not df.empty and not map_df["event_id"].astype(str).eq(event_id).any():
+            focus_rows = df[df["event_id"].astype(str) == event_id]
+            if not focus_rows.empty:
+                map_df = pd.concat([map_df, focus_rows], ignore_index=True)
+    if current_alert_id is not None:
+        map_df = map_df[
+            map_df["event_id"].astype(str).eq(current_alert_id)
+        ].copy()
 
     training_map_events = (
-        map_df[map_df["is_stream"].astype(bool)].to_dict(orient="records")
-        if not map_df.empty and "is_stream" in map_df
+        map_df[map_df["is_demo"].astype(bool)].to_dict(orient="records")
+        if not map_df.empty and "is_demo" in map_df
         else []
     )
+    if show_demo_data:
+        training_map_events = [
+            incident
+            for incident in training_map_events
+            if str(incident["event_id"]) == current_alert_id
+        ]
     training_map_payload = []
     for incident in training_map_events:
         event_id = str(incident["event_id"])
@@ -794,31 +959,51 @@ else:
             display_incident_address(incident["address"], True)
         )
         dispatch = dispatch_by_incident.get(event_id)
-        dispatch_detail = (
-            f"<br><b>TRAINING PATROL ASSIGNED:</b> "
-            f"{html.escape(str(dispatch['unit']['unit_id']))}"
-            f" · {dispatch['distance_km']:.2f} km away"
-            if dispatch
-            else ""
-        )
+        dispatch_detail = ""
+        if dispatch and dispatch["station"] is not None:
+            dispatch_detail = (
+                f"<br><b>NEAREST STATION:</b> "
+                f"{html.escape(dispatch['station']['name'])}"
+                f" · {dispatch['station_distance_km']:.2f} km away"
+            )
+        if dispatch and dispatch.get("nearby_stations"):
+            nearby_html = "<br><b>NEARBY STATIONS:</b>"
+            for nearby_station, dist_km in dispatch["nearby_stations"][:1]:
+                if nearby_station["station_id"] != dispatch.get("station", {}).get("station_id"):
+                    nearby_html += (
+                        f"<br>{html.escape(nearby_station['name'])} · {dist_km:.2f} km"
+                    )
+            dispatch_detail += nearby_html
+        if dispatch:
+            if dispatch["unit"] is not None:
+                dispatch_detail += (
+                    f"<br><b>{'MANUAL ' if dispatch['manual'] else ''}"
+                    f"PATROL ASSIGNED:</b> "
+                    f"{html.escape(str(dispatch['unit']['unit_id']).replace('SIM-TN-UNIT-', 'UNIT-'))}"
+                    f" · {dispatch['distance_km']:.2f} km away"
+                )
         training_map_payload.append(
             {
                 "event_id": event_id,
+                "incident_type": incident_type,
                 "latitude": float(incident["latitude"]),
                 "longitude": float(incident["longitude"]),
                 "priority": str(incident["priority"]).upper(),
                 "popup_html": (
-                    f"<b>TRAINING EXERCISE · {incident_type}</b><br>"
-                    f"{incident_address}<br>"
+                    f"{'<b>CURRENT ALERT CASE</b><br>' if event_id == current_alert_id else ''}"
+                    f"<b>{incident_type}</b><br>"
+                    f"<b>Area:</b> {incident_address}<br>"
+                    f"<b>Reported:</b> "
+                    f"{html.escape(display_incident_time(incident['timestamp']))}<br>"
                     f"{html.escape(str(incident['priority']))} · "
                     f"{html.escape(display_incident_status(incident['status']))}"
-                    f"{dispatch_detail}<br>Example location · not a live report"
+                    f"{dispatch_detail}"
                 ),
             }
         )
     render_map_df = (
-        map_df[~map_df["is_stream"].astype(bool)]
-        if not map_df.empty and "is_stream" in map_df
+        map_df[~map_df["is_demo"].astype(bool)]
+        if not map_df.empty and "is_demo" in map_df
         else map_df
     )
     critical_df = filtered_df[filtered_df["priority"].str.upper() == "CRITICAL"] if not filtered_df.empty else filtered_df
@@ -833,21 +1018,45 @@ else:
             )
         if demo_critical_count:
             st.markdown(
-                f'<div class="radar-live-alert">TRAINING EXERCISE: {demo_critical_count} '
+                f'<div class="radar-live-alert">CRITICAL REPORTS: {demo_critical_count} '
                 f'critical event{"s" if demo_critical_count != 1 else ""}</div>',
                 unsafe_allow_html=True,
             )
         st.markdown('<div class="radar-panel"><h3>Map Legend</h3><small>State outline · Tamil Nadu jurisdiction<br>'
                     'Cyan heatmap · incident density<br>'
                     'Red dot · selected incident<br>'
+                    'Red label · current alert case<br>'
                     'Red ring · critical report<br>'
                     'Cyan line · received patrol telemetry only<br>'
                     'Blue marker · received patrol asset</small></div>', unsafe_allow_html=True)
+        station_alert_outbox = st.session_state.get("station_alert_outbox", [])
+        with st.expander(
+            f"Station Message Dashboard · {len(station_alert_outbox)}",
+            expanded=False,
+        ):
+            st.caption(
+                "Session log only; no external station messaging service is connected."
+            )
+            if station_alert_outbox:
+                for entry in reversed(station_alert_outbox):
+                    status = entry.get("status", "Sent (simulated)")
+                    station_name = entry.get("station_name", "Unknown station")
+                    st.markdown(f"**{status}** · {station_name}")
+                    st.caption(
+                        f"{entry.get('sent_at', 'Unknown time')} · "
+                        f"Case {entry.get('incident_id', 'Unknown')} · "
+                        f"{entry.get('incident_type', 'Incident')} · "
+                        f"{entry.get('distance_km', 'Unknown')} km"
+                    )
+                    st.caption(entry.get("message", ""))
+            else:
+                st.caption("No station alert messages have been recorded yet.")
 
     with map_panel:
         toolbar_city, toolbar_scope = st.columns([2, 1])
         with toolbar_city:
             city_centers = {
+                "Tamil Nadu": [10.8, 78.2],
                 "Chennai": [13.0827, 80.2707],
                 "Coimbatore": [11.0168, 76.9558],
                 "Madurai": [9.9252, 78.1198],
@@ -855,13 +1064,26 @@ else:
                 "Tiruchirappalli": [10.7905, 78.7047],
                 "Tirunelveli": [8.7139, 77.7567],
                 "Erode": [11.3410, 77.7172],
+                "Vellore": [12.9165, 79.1325],
+                "Tiruppur": [11.1085, 77.3411],
+                "Thanjavur": [10.7870, 79.1378],
+                "Cuddalore": [11.7480, 79.7714],
+                "Thoothukudi": [8.7642, 78.1348],
+                "Nagercoil": [8.1833, 77.4119],
+                "Dindigul": [10.3673, 77.9803],
+                "Hosur": [12.7409, 77.8253],
+                "Kanchipuram": [12.8342, 79.7036],
+                "Karur": [10.9601, 78.0766],
+                "Ramanathapuram": [9.3639, 78.8395],
+                "Pudukkottai": [10.3833, 78.8001],
             }
             map_city = st.selectbox(
-                "Map focus", list(city_centers), label_visibility="collapsed", key="map-city-focus"
+                "Map focus", list(city_centers), index=0,
+                label_visibility="collapsed", key="map-city-focus"
             )
         with toolbar_scope:
             status_text = (
-                f"TRAINING EXERCISE · {demo_count} SAMPLE EVENTS · NOT LIVE"
+                f"TAMIL NADU · {demo_count} INCIDENTS"
                 if show_demo_data
                 else "TAMIL NADU · AGENCY DATA ONLY"
             )
@@ -877,14 +1099,14 @@ else:
             )
         elif demo_critical_count:
             st.markdown(
-                f'<div class="radar-live-alert">⚠ TRAINING EXERCISE · '
-                f'{demo_critical_count} critical events · NOT LIVE</div>',
+                f'<div class="radar-live-alert">⚠ '
+                f'{demo_critical_count} critical events</div>',
                 unsafe_allow_html=True,
             )
         elif not filtered_df.empty:
             st.markdown(
                 f'<div class="radar-live-alert">● {len(filtered_df)} matching report(s) · '
-                'training events are clearly marked</div>',
+                'See agency feed status above</div>',
                 unsafe_allow_html=True,
             )
         else:
@@ -893,6 +1115,27 @@ else:
                 'Awaiting authorized agency reports</div>',
                 unsafe_allow_html=True,
             )
+
+        current_alert_dispatch = (
+            dispatch_by_incident.get(current_alert_id)
+            if current_alert_id is not None
+            else None
+        )
+        current_case_map_stations = []
+        if current_alert_dispatch:
+            if current_alert_dispatch["station"] is not None:
+                current_case_map_stations.append(
+                    (
+                        current_alert_dispatch["station"],
+                        current_alert_dispatch["station_distance_km"],
+                    )
+                )
+            current_case_map_stations.extend(
+                current_alert_dispatch.get("nearby_stations", [])[:1]
+            )
+        current_case_map_station_ids = {
+            station["station_id"] for station, _ in current_case_map_stations
+        }
 
         boundary_coordinates = [
             point
@@ -904,9 +1147,15 @@ else:
         north = max(point[1] for point in boundary_coordinates)
         east = max(point[0] for point in boundary_coordinates)
         radar_map = folium.Map(
-            location=city_centers[map_city],
-            zoom_start=15,
-            min_zoom=7,
+            location=(
+                [current_alert_incident["latitude"], current_alert_incident["longitude"]]
+                if current_alert_incident is not None
+                else city_centers[map_city]
+            ),
+            zoom_start=14 if current_alert_incident is not None else (
+                6 if map_city == "Tamil Nadu" else 13
+            ),
+            min_zoom=6,
             tiles=None,
             control_scale=True,
             max_bounds=True,
@@ -967,13 +1216,163 @@ else:
                 "fillOpacity": 0.16,
             },
         ).add_to(radar_map)
+        if show_demo_data:
+            for station in police_stations:
+                city_center = city_centers[map_city]
+                is_current_case_station = (
+                    station["station_id"] in current_case_map_station_ids
+                )
+                if not is_current_case_station and haversine(
+                    city_center[1],
+                    city_center[0],
+                    station["longitude"],
+                    station["latitude"],
+                ) > 35:
+                    continue
+                nearest_incident = min(
+                    map_df.to_dict(orient="records"),
+                    key=lambda incident: haversine(
+                        station["longitude"],
+                        station["latitude"],
+                        incident["longitude"],
+                        incident["latitude"],
+                    ),
+                    default=None,
+                )
+                station_details = (
+                    f"<b>Area:</b> "
+                    f"{html.escape(station['name'].removesuffix(' Station'))}<br>"
+                    "Station location"
+                )
+                if nearest_incident is not None:
+                    nearest_distance = haversine(
+                        station["longitude"],
+                        station["latitude"],
+                        nearest_incident["longitude"],
+                        nearest_incident["latitude"],
+                    )
+                    nearest_type = html.escape(
+                        display_incident_type(
+                            nearest_incident["incident_type"],
+                            bool(nearest_incident["is_demo"]),
+                        )
+                    )
+                    nearest_area = html.escape(
+                        display_incident_address(
+                            nearest_incident["address"],
+                            bool(nearest_incident["is_demo"]),
+                        )
+                    )
+                    station_details += (
+                        f"<br><b>Nearest displayed incident:</b> {nearest_type}"
+                        f"<br><b>Incident area:</b> {nearest_area}"
+                        f"<br><b>Reported:</b> "
+                        f"{html.escape(display_incident_time(nearest_incident['timestamp']))}"
+                        f"<br><b>Distance:</b> {nearest_distance:.2f} km"
+                    )
+                if is_current_case_station:
+                    alert_distance = next(
+                        distance
+                        for case_station, distance in current_case_map_stations
+                        if case_station["station_id"] == station["station_id"]
+                    )
+                    station_details += (
+                        f"<br><b>Current case option:</b> "
+                        f"{html.escape(display_incident_type(current_alert_incident['incident_type'], True))}"
+                        f" · {alert_distance:.2f} km"
+                    )
+                    folium.PolyLine(
+                        locations=[
+                            [current_alert_incident["latitude"], current_alert_incident["longitude"]],
+                            [station["latitude"], station["longitude"]],
+                        ],
+                        color="#ffc247",
+                        weight=3,
+                        opacity=0.9,
+                        dash_array="6, 6",
+                        tooltip=f"Nearby station · {alert_distance:.2f} km",
+                    ).add_to(radar_map)
+                folium.Marker(
+                    location=[station["latitude"], station["longitude"]],
+                    popup=(
+                        f"<b>{html.escape(station['name'])}</b><br>"
+                        f"{station_details}"
+                    ),
+                    tooltip=html.escape(station["name"]),
+                    icon=folium.Icon(
+                        color="orange" if is_current_case_station else "cadetblue",
+                        icon="building",
+                        prefix="fa",
+                    ),
+                ).add_to(radar_map)
+        if current_alert_incident is not None:
+            active_case_type = html.escape(
+                display_incident_type(current_alert_incident["incident_type"], True)
+            )
+            active_case_address = html.escape(
+                display_incident_address(current_alert_incident["address"], True)
+            )
+            active_case_position = alert_case_queue.index(current_alert_id) + 1
+            active_case_label = (
+                f"CURRENT CASE · CASE {active_case_position} OF "
+                f"{len(alert_case_queue)}"
+            )
+            folium.Marker(
+                location=[
+                    current_alert_incident["latitude"],
+                    current_alert_incident["longitude"],
+                ],
+                icon=folium.DivIcon(
+                    html=(
+                        '<div style="display:flex;align-items:center;gap:5px;'
+                        'white-space:nowrap;transform:translateY(-50%);">'
+                        '<span style="width:16px;height:16px;flex:none;'
+                        'background:#ff354d;border:3px solid #fff;border-radius:50%;'
+                        'box-shadow:0 0 14px #ff354d;"></span>'
+                        f'<span style="background:#ff354d;color:#fff;padding:5px 8px;'
+                        'border:1px solid #fff;border-radius:4px;font:bold 11px sans-serif;'
+                        f'box-shadow:0 0 12px #ff354d;">{active_case_label}</span></div>'
+                    ),
+                    icon_size=(205, 30),
+                    icon_anchor=(8, 15),
+                ),
+                tooltip=f"{active_case_label} · {active_case_type}",
+                popup=folium.Popup(
+                    f"<b>{active_case_label}</b><br>"
+                    f"<b>{active_case_type}</b><br>"
+                    f"<b>Area:</b> {active_case_address}<br>"
+                    f"<b>Reported:</b> "
+                    f"{html.escape(display_incident_time(current_alert_incident['timestamp']))}",
+                    max_width=280,
+                ),
+                z_index_offset=1000,
+            ).add_to(radar_map)
+        incident_cluster = MarkerCluster(
+            name="Incident markers",
+            icon_create_function=(
+                "function(cluster) {"
+                "return L.divIcon({"
+                "html: '<div class=\"incident-cluster-icon\" "
+                "title=\"Incident locations · click to zoom\">"
+                "<div class=\"incident-cluster-dot\"></div></div>',"
+                "className: '', iconSize: L.point(34, 34)"
+                "});}"
+            ),
+            options={
+                "maxClusterRadius": 42,
+                "disableClusteringAtZoom": 16,
+                "spiderfyOnMaxZoom": True,
+                "showCoverageOnHover": False,
+            },
+        ).add_to(radar_map)
+        IncidentClusterRegistry(incident_cluster).add_to(radar_map)
         if not render_map_df.empty:
             incident_heat_layer = HeatMap(
                 render_map_df[["latitude", "longitude"]].values.tolist(),
                 name="Incident density",
-                radius=24,
-                blur=20,
-                min_opacity=0.35,
+                radius=15,
+                blur=12,
+                min_opacity=0.18,
                 gradient={
                     0.25: "#168de2",
                     0.55: "#22bad1",
@@ -995,53 +1394,74 @@ else:
                 incident_id = str(incident["event_id"])
                 dispatch = dispatch_by_incident.get(incident_id)
                 dispatch_detail = ""
-                if dispatch:
+                if dispatch and dispatch["station"] is not None:
                     dispatch_detail = (
-                        f"<br><b>TRAINING PATROL ASSIGNED:</b> "
-                        f"{html.escape(str(dispatch['unit']['unit_id']))}"
-                        f" · {dispatch['distance_km']:.2f} km away"
+                        f"<br><b>NEAREST STATION:</b> "
+                        f"{html.escape(dispatch['station']['name'])}"
+                        f" · {dispatch['station_distance_km']:.2f} km away"
                     )
+                if dispatch and dispatch.get("nearby_stations"):
+                    nearby_html = "<br><b>NEARBY STATIONS:</b>"
+                    for nearby_station, dist_km in dispatch["nearby_stations"][:1]:
+                        if nearby_station["station_id"] != dispatch.get("station", {}).get("station_id"):
+                            nearby_html += (
+                                f"<br>{html.escape(nearby_station['name'])} · {dist_km:.2f} km"
+                            )
+                    dispatch_detail += nearby_html
+                if dispatch:
+                    if dispatch["unit"] is not None:
+                        dispatch_detail += (
+                            f"<br><b>{'MANUAL ' if dispatch['manual'] else ''}"
+                            f"PATROL ASSIGNED:</b> "
+                            f"{html.escape(str(dispatch['unit']['unit_id']).replace('SIM-TN-UNIT-', 'UNIT-'))}"
+                            f" · {dispatch['distance_km']:.2f} km away"
+                        )
+                is_selected = str(
+                    st.session_state.get("map_focus_event_id", "")
+                ) == incident_id
+                marker_classes = ["incident-map-marker"]
                 if is_critical:
-                    folium.Circle(
-                        location=incident_location,
-                        radius=1500,
-                        color="#ff354d",
-                        weight=2,
-                        fill=True,
-                        fill_color="#ff354d",
-                        fill_opacity=0.1,
-                        tooltip="Critical containment zone · 1.50 km radius",
-                    ).add_to(radar_map)
-                incident_marker = folium.CircleMarker(
+                    marker_classes.append("critical")
+                if is_selected:
+                    marker_classes.append("selected")
+                marker_size = 22 if is_selected else 18
+                marker_anchor = marker_size // 2
+                incident_marker = folium.Marker(
                     location=incident_location,
-                    radius=7,
-                    color="#22bad1",
-                    weight=2,
-                    fill=True,
-                    fill_color="#22bad1",
-                    fill_opacity=0.95,
+                    icon=folium.DivIcon(
+                        html=(
+                            f'<div class="{" ".join(marker_classes)}"></div>'
+                        ),
+                        icon_size=(marker_size, marker_size),
+                        icon_anchor=(marker_anchor, marker_anchor),
+                    ),
                     tooltip=(
-                        f"{'TRAINING · ' if is_demo else ''}{incident_name} · "
-                        f"{incident['priority']}"
+                        incident_name
                     ),
                     popup=folium.Popup(
-                        f"<b>{'TRAINING EXERCISE · ' if is_demo else ''}{incident_name}</b><br>"
-                        f"{incident_address}<br>"
+                        f"<b>{incident_name}</b><br>"
+                        f"<b>Area:</b> {incident_address}<br>"
+                        f"<b>Reported:</b> "
+                        f"{html.escape(display_incident_time(incident['timestamp']))}<br>"
+                        f"<b>Incident ID:</b> "
+                        f"{html.escape(display_event_id(incident_id, is_demo))}<br>"
                         f"{html.escape(str(incident['priority']))} · "
                         f"{html.escape(display_incident_status(incident['status']))}"
                         f"{dispatch_detail}",
                         max_width=280,
                         show=False,
                     ),
+                ).add_to(incident_cluster)
+                IncidentMarkerRegistry(
+                    incident_id, incident_marker, is_critical
                 ).add_to(radar_map)
-                IncidentMarkerRegistry(incident_id, incident_marker).add_to(radar_map)
         elif show_demo_data:
             incident_heat_layer = HeatMap(
                 [],
                 name="Incident density",
-                radius=24,
-                blur=20,
-                min_opacity=0.35,
+                radius=15,
+                blur=12,
+                min_opacity=0.18,
                 gradient={
                     0.25: "#168de2",
                     0.55: "#22bad1",
@@ -1068,12 +1488,11 @@ else:
                 is_demo_unit = is_training_status(unit_status)
                 is_available = unit_status.strip().upper() == "AVAILABLE"
                 unit_popup = (
-                    f"{'TRAINING EXERCISE · ' if is_demo_unit else ''}"
                     f"{html.escape(unit['unit_id'])}<br>"
                     f"Status: {html.escape(display_patrol_status(unit_status))}"
                 )
                 unit_tooltip = (
-                    f"{'TRAINING · ' if is_demo_unit else ''}{html.escape(unit['unit_id'])}"
+                    html.escape(str(unit["unit_id"]).replace("SIM-TN-UNIT-", "UNIT-"))
                 )
                 assigned_to = next(
                     (
@@ -1135,13 +1554,13 @@ else:
                         weight=3,
                         opacity=0.95,
                         dash_array="8, 6",
-                        tooltip=f"TRAINING ASSIGNMENT · {distance:.2f} km · NOT LIVE",
+                        tooltip=f"Assignment · {distance:.2f} km",
                     ).add_to(radar_map)
                     unit_popup += (
-                        f"<br>TRAINING ASSIGNED TO: {html.escape(assigned_to)}"
+                        f"<br>ASSIGNED TO: {html.escape(display_event_id(assigned_to, True))}"
                         f"<br>Distance: {distance:.2f} km"
                     )
-                    unit_tooltip += f" · TRAINING ASSIGNED · {distance:.1f} km"
+                    unit_tooltip += f" · ASSIGNED · {distance:.1f} km"
                 patrol_marker = folium.Marker(
                     location=unit_location,
                     popup=unit_popup,
@@ -1150,10 +1569,7 @@ else:
                 ).add_to(radar_map)
 
         if show_patrol_units and displayed_units:
-            st.caption(
-                f"Displaying {len(displayed_units)} patrol marker(s). "
-                "Training units are examples and do not represent live police positions."
-            )
+            st.caption(f"Displaying {len(displayed_units)} patrol marker(s).")
         elif show_patrol_units:
             st.caption("No recent patrol telemetry received.")
         components.html(
@@ -1161,11 +1577,15 @@ else:
             height=0,
             scrolling=False,
         )
-        MapFocusWatcher(map_city, show_demo_data).add_to(radar_map)
+        MapFocusWatcher(
+            map_city,
+            show_demo_data,
+            active_alert_case_id=current_alert_id,
+        ).add_to(radar_map)
 
         map_signature = json.dumps(
             {
-                "map_mode": "incremental-training-v5",
+                "map_mode": "incremental-training-v11",
                 "city": map_city,
                 "incidents": (
                     render_map_df[
@@ -1192,7 +1612,9 @@ else:
                     if show_patrol_units
                     else []
                 ),
+                "manual_training_assignments": manual_assignments,
                 "show_training": show_demo_data,
+                "active_alert_case_id": current_alert_id,
             },
             sort_keys=True,
             default=str,
@@ -1212,81 +1634,117 @@ else:
 
     with right_panel:
         st.markdown('<div class="radar-panel"><h3>Incident Alerts</h3></div>', unsafe_allow_html=True)
-        st.caption(
-            "TRAINING EXERCISE · NOT LIVE" if show_demo_data else "Alerts hidden."
-        )
-        if show_demo_data:
-            if not demo_critical_incidents:
-                st.caption("No critical training incidents to dispatch.")
-            elif not simulated_units:
-                st.warning("No training patrol units are available for assignment.")
+        if not alert_case_queue:
+            st.caption("No unalerted critical cases in the database.")
+        else:
+            incident_id = alert_case_queue[0]
+            incident = current_alert_incident
+            if incident is None:
+                st.caption("Waiting for the queued case to be available in the database.")
             else:
-                for incident in demo_critical_incidents:
-                    incident_id = str(incident["event_id"])
-                    dispatch = dispatch_by_incident.get(incident_id)
-                    incident_type = display_incident_type(incident["incident_type"], True)
-                    incident_address = display_incident_address(incident["address"], True)
-                    st.button(
-                        f"🚨 {incident_type} · {incident_address}",
-                        key=f"locate-incident-{incident_id}",
-                        use_container_width=True,
-                        on_click=focus_incident_on_map,
-                        args=(incident_id,),
-                        type="primary",
-                    )
-                    if dispatch:
-                        st.caption(
-                            f"Assigned: {dispatch['unit']['unit_id']} · "
-                            f"{dispatch['distance_km']:.2f} km away · "
-                            "training assignment only"
-                        )
-                    else:
-                        st.caption("No training patrol available for assignment.")
-        st.markdown('<div class="radar-panel"><h3>Incident Frequency</h3></div>', unsafe_allow_html=True)
-        if filtered_df.empty:
-            st.caption("No incidents to chart.")
-        else:
-            chart_data = filtered_df.assign(
-                category=filtered_df["priority"].str.upper().eq("CRITICAL").map(
-                    {True: "Critical", False: "Other"}
+                case_position = next(
+                    index
+                    for index, queued_id in enumerate(alert_case_queue, start=1)
+                    if queued_id == incident_id
                 )
-            ).pivot_table(
-                index="incident_type",
-                columns="category",
-                values="event_id",
-                aggfunc="count",
-                fill_value=0,
-            )
-            for category in ("Critical", "Other"):
-                if category not in chart_data:
-                    chart_data[category] = 0
-            st.bar_chart(
-                chart_data[["Other", "Critical"]],
-                color=["#27c5db", "#ff5364"],
-                height=250,
-            )
-        st.markdown('<div class="radar-panel"><h3>Filtered Incidents</h3></div>', unsafe_allow_html=True)
-        if filtered_df.empty:
-            st.caption("No matching incident clusters.")
-        else:
-            for _, incident in filtered_df.head(6).iterrows():
-                critical_class = " radar-zone-critical" if str(incident["priority"]).upper() == "CRITICAL" else ""
-                demo_label = " · TRAINING EXERCISE" if bool(incident["is_demo"]) else ""
+                st.caption(
+                    f"Case {case_position} of {len(alert_case_queue)} · "
+                    f"{'Training' if bool(incident['is_demo']) else 'Database'} case"
+                )
+                dispatch = dispatch_by_incident.get(incident_id)
+                is_training_case = bool(incident["is_demo"])
                 incident_type = display_incident_type(
-                    incident["incident_type"], bool(incident["is_demo"])
+                    incident["incident_type"], is_training_case
                 )
                 incident_address = display_incident_address(
-                    incident["address"], bool(incident["is_demo"])
+                    incident["address"], is_training_case
                 )
-                st.markdown(
-                    f'<div class="radar-zone{critical_class}">'
-                    f'<b>{html.escape(incident_type)}</b><br>'
-                    f'<small>{html.escape(incident_address)}</small><br>'
-                    f'<small>{html.escape(str(incident["priority"]))} · '
-                    f'{html.escape(display_incident_status(incident["status"]))}'
-                    f'{demo_label}</small></div>',
-                    unsafe_allow_html=True,
+                st.button(
+                    f"🚨 {incident_type} · {incident_address}",
+                    key=f"locate-incident-{incident_id}",
+                    use_container_width=True,
+                    on_click=focus_incident_on_map,
+                    args=(incident_id,),
+                    type="primary",
                 )
+                if dispatch and dispatch["station"] is not None:
+                    st.caption(
+                        f"Nearest: {dispatch['station']['name']} · "
+                        f"{dispatch['station_distance_km']:.2f} km"
+                    )
+                if dispatch and (
+                    dispatch["station"] is not None
+                    or dispatch.get("nearby_stations")
+                ):
+                    nearby_station_candidates = dispatch.get(
+                        "nearby_stations", []
+                    )[:1]
+                    if nearby_station_candidates:
+                        with st.expander(
+                            f"📍 {len(nearby_station_candidates)} additional nearby station(s)"
+                        ):
+                            for nearby_station, dist_km in nearby_station_candidates:
+                                st.caption(
+                                    f"{nearby_station['name']} · {dist_km:.2f} km"
+                                )
+                    station_options = (
+                        [(dispatch["station"], dispatch["station_distance_km"])]
+                        if dispatch["station"] is not None
+                        else []
+                    ) + nearby_station_candidates
+                    selected_station_names = st.multiselect(
+                        "Select up to 2 stations to alert",
+                        options=[station["name"] for station, _ in station_options],
+                        default=[],
+                        key=f"manual-station-select-{incident_id}",
+                    )
+                    selected_station_names = selected_station_names[:2]
+                    selected_stations = [
+                        (station, distance)
+                        for station, distance in station_options
+                        if station["name"] in selected_station_names
+                    ]
+                    if st.button(
+                        f"📢 Alert {len(selected_stations)} station(s)",
+                        key=f"alert-stations-{incident_id}",
+                        use_container_width=True,
+                        disabled=not selected_stations,
+                    ):
+                        alert_msg = (
+                            f"INCIDENT ALERT: {incident_type} at {incident_address}. "
+                            f"Reported: {display_incident_time(incident['timestamp'])}. "
+                            f"Priority: {incident['priority']}. "
+                            "Please respond."
+                        )
+                        outbox = st.session_state.setdefault("station_alert_outbox", [])
+                        for nearby_station, dist_km in selected_stations:
+                            outbox.append({
+                                "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "station_name": nearby_station["name"],
+                                "incident_id": incident_id,
+                                "incident_type": incident_type,
+                                "distance_km": f"{dist_km:.2f}",
+                                "message": alert_msg,
+                                "status": "Sent (simulated)",
+                            })
+                        del outbox[:-50]
+                        st.session_state["last_alert"] = {
+                            "incident_id": incident_id,
+                            "incident_type": incident_type,
+                            "incident_address": incident_address,
+                            "stations_count": len(selected_stations),
+                            "stations": [station["name"] for station, _ in selected_stations],
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                        }
+                        alert_case_queue.remove(incident_id)
+                        st.session_state["critical_alert_case_queue"] = alert_case_queue
+                        st.toast(
+                            f"✅ Alert sent to {len(selected_stations)} station(s) for {incident_type}",
+                            icon="📢",
+                        )
+                        st.rerun()
+                elif dispatch:
+                    st.caption("No stations are available to alert for this case.")
 
     st.subheader("Tamil Nadu Incident Telemetry")
     if filtered_df.empty:
@@ -1307,13 +1765,6 @@ else:
         telemetry_table.loc[training_rows, "address"] = telemetry_table.loc[
             training_rows, "address"
         ].map(lambda address: display_incident_address(address, True))
-        telemetry_table.insert(
-            0,
-            "source",
-            filtered_df["is_demo"].map(
-                {True: "TRAINING EXERCISE · NOT LIVE", False: "AGENCY"}
-            ),
-        )
         st.dataframe(
             telemetry_table,
             use_container_width=True,
@@ -1321,5 +1772,7 @@ else:
         )
 
 
-time.sleep(REFRESH_SECONDS)
+time.sleep(
+    max(0, REFRESH_SECONDS - (time.monotonic() - refresh_started_at))
+)
 st.rerun()

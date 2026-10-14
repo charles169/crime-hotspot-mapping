@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import Base, SessionLocal, engine, get_db
 from .geography import TAMIL_NADU_FEATURE, is_in_tamil_nadu
-from .models import CrimeIncident, PatrolUnit, SourceSyncStatus
+from .models import CrimeIncident, PatrolUnit, PoliceStation, SourceSyncStatus
 
 
 @asynccontextmanager
@@ -26,6 +26,10 @@ async def lifespan(_: FastAPI):
         for unit in patrol_units:
             if not is_in_tamil_nadu(unit.latitude, unit.longitude):
                 await db.delete(unit)
+        stations = await db.scalars(select(PoliceStation))
+        for station in stations:
+            if not is_in_tamil_nadu(station.latitude, station.longitude):
+                await db.delete(station)
         source_statuses = await db.scalars(select(SourceSyncStatus))
         for status in source_statuses:
             await db.delete(status)
@@ -80,6 +84,18 @@ class PatrolUnitRead(BaseModel):
     longitude: float
     updated_at: Optional[datetime] = None
     simulated: bool = False
+
+
+class PoliceStationTelemetry(BaseModel):
+    station_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=120)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    unit_id: str = Field(min_length=1, max_length=100)
+
+
+class PoliceStationRead(PoliceStationTelemetry):
+    model_config = ConfigDict(from_attributes=True)
 
 
 @app.post("/api/v1/ingest", status_code=201, response_model=dict)
@@ -157,6 +173,38 @@ async def get_data_sources():
 @app.get("/api/v1/jurisdiction")
 async def get_jurisdiction():
     return TAMIL_NADU_FEATURE
+
+
+@app.post("/api/v1/police-stations", response_model=PoliceStationRead)
+async def upsert_police_station(
+    station: PoliceStationTelemetry,
+    db: AsyncSession = Depends(get_db),
+):
+    if not is_in_tamil_nadu(station.latitude, station.longitude):
+        raise HTTPException(
+            status_code=422,
+            detail="Station coordinates are outside Tamil Nadu.",
+        )
+    db_station = await db.get(PoliceStation, station.station_id)
+    if db_station is None:
+        db_station = PoliceStation(**station.model_dump())
+        db.add(db_station)
+    else:
+        for field, value in station.model_dump(exclude={"station_id"}).items():
+            setattr(db_station, field, value)
+    await db.commit()
+    await db.refresh(db_station)
+    return db_station
+
+
+@app.get("/api/v1/police-stations", response_model=List[PoliceStationRead])
+async def get_police_stations(db: AsyncSession = Depends(get_db)):
+    result = await db.scalars(select(PoliceStation).order_by(PoliceStation.name))
+    return [
+        station
+        for station in result.all()
+        if is_in_tamil_nadu(station.latitude, station.longitude)
+    ]
 
 
 @app.post("/api/v1/patrol-units", response_model=PatrolUnitRead)

@@ -29,6 +29,16 @@ class PatrolUnit(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class PoliceStation(Base):
+    __tablename__ = "police_stations"
+
+    station_id = Column(String(100), primary_key=True)
+    name = Column(String(120), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    unit_id = Column(String(100), nullable=False)
+
+
 class SourceSyncStatus(Base):
     __tablename__ = "source_sync_status"
 

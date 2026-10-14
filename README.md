@@ -31,17 +31,19 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 streamlit run frontend/app.py
 ```
 
-Open the dashboard at <http://127.0.0.1:8501>. It refreshes every five
-seconds. The dashboard shows in-app toast alerts for newly detected critical
-incidents. API documentation is at <http://127.0.0.1:8000/docs>.
+Open the dashboard at <http://127.0.0.1:8501>. It polls the SQL-backed API
+every two seconds. Newly detected critical incidents are queued for operator
+review and shown as the active case on the map; they remain queued until an
+operator records an alert. The dashboard also shows in-app toast alerts for
+newly detected critical incidents. API documentation is at
+<http://127.0.0.1:8000/docs>.
 
 ## Configure MySQL
 
-The API can use either its default local SQLite database or a MySQL database.
-Install the requirements above and create a MySQL database (for example,
-`crime_radar`). Configure and verify the connection with the helper's window.
-It includes a **Show password** option and saves the URL to the git-ignored
-`.env` file only after a successful connection:
+The API requires MySQL; SQLite is not supported. Create a MySQL database (for
+example, `crime_radar`) and configure and verify the connection with the
+helper. It includes a **Show password** option and saves the URL to the
+git-ignored `.env` file only after a successful connection:
 
 ```powershell
 .\.venv\Scripts\python.exe configure_mysql.py
@@ -50,48 +52,69 @@ It includes a **Show password** option and saves the URL to the git-ignored
 Use a MySQL account with access to the selected database; a dedicated
 application account is safer than `root`. Restart the FastAPI server after
 configuration. On startup, SQLAlchemy creates the application tables in the
-selected database. If no `.env` setting is present, the API uses
-`crime_radar_core.db` (SQLite).
+selected MySQL database. The API will not start without a valid
+`mysql+asyncmy://` connection URL.
 The dashboard uses an analytics / filters / map / incident-panels layout. The
-map opens at detailed Chennai street level and can jump to other Tamil Nadu
-cities. It uses Esri street tiles with a dark tactical treatment, masks map
+map opens to a Tamil Nadu-wide view, with city-level focus options across the
+state. It uses Esri street tiles with a dark tactical treatment, masks map
 tiles outside Tamil Nadu, and restricts panning to the state's bounding area.
 Esri basemap tiles are attributed in the map. Charts and the incident-density
 heatmap reflect the currently displayed incidents. When training is disabled
 and no agency data has arrived, they remain empty.
 
-The dashboard's **Show training exercise** switch is enabled by default to
-display map markers, hotspot density, and incident panels. The eight
-Chennai training examples are created in the dashboard only and are never
-saved to the API database. The included simulator also writes training records
-to the API; these are hidden when the training switch is off. Neither source
-represents live reports. Disable the switch to view only incidents received
-from an agency webhook.
-While the switch is on, the dashboard adds a new in-memory Chennai training
-incident approximately every ten seconds, retains at most 20 generated
-incidents, and stops generating them when the switch is off. These incidents
-are not written to MySQL or presented as agency records. New markers are added
-inside the existing Leaflet map, so the map and its tiles stay in place during
-the five-second dashboard refresh. Selecting an incident alert smoothly moves
-the map to that incident, highlights it with the red dot, and opens its popup;
-the previous selected incident marker is removed from the map. Clicking an
+The dashboard's **Show incidents** switch is enabled by default. Incidents and
+patrol and station positions are loaded from the configured MySQL database through the
+API. Run the seeder below to populate 45 fixed incident records distributed
+across Tamil Nadu, 40 patrol positions, and 40 station locations; the seeder
+is safe to run again. The dashboard does not generate incidents locally.
+Disable the switch to view only incidents received from an agency webhook.
+The persistent
+**NO LIVE AGENCY FEED** notice distinguishes the prototype display from an
+authorized agency feed. The dashboard filters incidents by type, priority,
+and status, and address search matches part of an address without case
+sensitivity.
+The **Most Reported Area** insight counts the leading area among the incidents
+in the current filtered results and shows ties. Incident panels are sorted
+newest first. New database-backed markers are added inside the existing
+Leaflet map during dashboard refreshes, without rebuilding the map or
+reloading its tiles. Selecting an incident alert smoothly moves the map to
+that incident, highlights it with the red dot, and opens its popup; the
+previous selected incident marker is removed from the map. Clicking an
 incident also clears the blue incident-density heat spots from the map to
 avoid leaving old hotspots behind during navigation.
 
-Critical incidents receive a 1.5 km containment ring. Intercept lines use the
-Haversine distance to connect recently reported patrol units whose status is
-`AVAILABLE` to the nearest matching agency incident. Training incidents and
-patrol positions are not used to imply a real dispatch.
+The selected critical incident shows a 1.5 km containment ring; only one
+ring is displayed at a time to keep overlapping zones readable. Intercept
+lines use the Haversine distance to connect recently reported patrol units whose status is
+`AVAILABLE` to the nearest matching agency incident.
 
-With the training exercise enabled, critical events show an in-app alert and
-are automatically assigned to the nearest available training patrol marker
-(one unit per event). Assignment details appear in the alert panel and
-incident map popup. If no training patrol telemetry is running, the dashboard
-uses clearly labeled, frontend-only training patrol markers. These alerts and
-assignments never contact, notify, or dispatch real police.
+With dashboard incidents enabled, critical events show an in-app alert and
+are automatically assigned to the nearest available patrol marker (one unit
+per event). Assignment details appear in the alert panel and incident map
+popup. If no patrol telemetry is available in MySQL, the dashboard shows no patrol
+markers.
+These alerts and assignments never contact, notify, or dispatch real police.
 Click a critical incident alert to center the map on that event and open its
-incident popup. Training activity is visibly marked and is not live agency
-data.
+incident popup. The persistent feed-status notice indicates that no live
+agency feed is connected.
+
+Critical incidents show the nearest station and patrol available in the
+dashboard, with approximate Haversine distances. Manual assignment lets an
+operator choose a station and available patrol; each patrol can be assigned
+to only one active incident. Clear a manual assignment to return to automatic
+matching. Choices are held in the current dashboard session and never contact
+or dispatch real officers.
+Overlapping incident markers appear as a plain location dot instead of a
+numbered cluster; click it to zoom in and separate the incidents. Clicking an
+incident shows its type, area, local report time, status, and nearest station
+when available. Clicking a station shows its area and the nearest displayed
+incident with report time and distance. The density heat layer uses a smaller,
+softer radius to make busy locations easier to read. The left filters
+dashboard slides open when hovered and closes when the pointer leaves. From an
+incident's manual-assignment panel, **Record station message** records the
+selected assignment and note in the session-only message log. It does not
+send email, SMS, or contact a station; real messaging requires an authorized
+dispatch integration.
 
 
 ## Ingest authorized agency telemetry
@@ -116,3 +139,16 @@ Nadu. Patrol positions older than two minutes are not shown.
 
 Run `python simulator.py` only to generate clearly labeled training data around
 Chennai; it does not represent police activity.
+
+To add the statewide training dataset to the configured MySQL database, start
+FastAPI and run:
+
+```powershell
+python seed_training_data.py
+```
+
+The seeder is safe to run more than once: it inserts missing incidents and
+upserts patrol and station records. Every inserted record is marked
+`TRAINING EXERCISE`; it does not add or imply real reports. Station location
+records populate the dashboard assignment controls. Station messages and
+assignments are session records, not dispatches.
