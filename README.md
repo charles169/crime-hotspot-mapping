@@ -38,52 +38,6 @@ operator records an alert. The dashboard also shows in-app toast alerts for
 newly detected critical incidents. API documentation is at
 <http://127.0.0.1:8000/docs>.
 
-## Access from another computer on the same network
-
-Run the API and dashboard on the computer that hosts the application. To make
-the dashboard available to other computers on your trusted local network, start
-Streamlit with a network-facing address:
-
-```powershell
-streamlit run frontend/app.py --server.address 0.0.0.0 --server.port 8501
-```
-
-On the host computer, find its local IPv4 address with `ipconfig`. From another
-computer on the same network, open `http://<host-ipv4-address>:8501` (for
-example, `http://192.168.1.50:8501`). If Windows Firewall prompts you, allow
-Python/Streamlit on **private networks**. If it still cannot connect, allow
-inbound TCP port 8501 on the host's private network. Do not enable public-network
-access or router port forwarding for this prototype.
-
-The dashboard normally calls the API on `127.0.0.1:8000` from the computer
-running Streamlit, so the API can stay bound to localhost when the dashboard
-and API run on the same host. If you also need to reach the API directly from
-another computer, start it with:
-
-```powershell
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-```
-
-Allow inbound TCP port 8000 only on the host's private network, then use
-`http://<host-ipv4-address>:8000/docs` from the other computer. If Streamlit
-runs on a different computer from the API, set `CRIME_RADAR_API_URL` on the
-Streamlit computer to the API host's LAN address before starting Streamlit. For
-example, in PowerShell:
-
-```powershell
-$env:CRIME_RADAR_API_URL = "http://192.168.1.50:8000"
-streamlit run frontend/app.py
-```
-
-The API host must then listen on `0.0.0.0` and allow inbound connections on
-port 8000.
-
-This exposes the dashboard/API, not the MySQL server. The database should
-remain accessible only to the API host; do not open MySQL port 3306 to the
-network. If MySQL itself is on a separate server, configure its bind address,
-firewall, and a dedicated account restricted to the API host, then set the
-API's `CRIME_RADAR_DATABASE_URL` to that MySQL server's address.
-
 ## Configure MySQL
 
 The API requires MySQL; SQLite is not supported. Create a MySQL database (for
