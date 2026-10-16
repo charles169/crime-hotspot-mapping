@@ -13,7 +13,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from branca.element import MacroElement, Template
-from folium.plugins import MarkerCluster
+from folium.plugins import HeatMap, MarkerCluster
 
 with (Path(__file__).resolve().parents[1] / "backend" / "data" / "tamil_nadu.geojson").open(
     encoding="utf-8"
@@ -27,15 +27,21 @@ class TacticalTileStyle(MacroElement):
         <style>.leaflet-container {background:#07111d;}
         .leaflet-fade-anim .leaflet-tile,
         .leaflet-fade-anim .leaflet-popup {transition:none !important;}
-        .incident-cluster-icon {align-items:center;background:#35151c;
-            border:2px solid #ff5364;border-radius:50%;box-shadow:0 0 10px #ff354d66;
+        .incident-cluster-icon {align-items:center;background:#123044;
+            border:2px solid #35c9dc;border-radius:50%;box-shadow:0 0 10px #35c9dc66;
             display:flex;height:34px;justify-content:center;width:34px;}
-        .incident-cluster-dot {background:#ff354d;border:2px solid #fff;
-            border-radius:50%;box-shadow:0 0 8px #ff354d99;height:12px;width:12px;}
-        .incident-map-marker {background:#ff354d;border:2px solid #fff;
-            border-radius:50%;box-shadow:0 0 8px #ff354d99;height:12px;width:12px;}
-        .incident-map-marker.selected {background:#ff354d;border:3px solid #fff;
-            box-shadow:0 0 12px #ff354d;}
+        .incident-cluster-dot {background:#89a9bd;border:2px solid #fff;
+            border-radius:50%;box-shadow:0 0 8px #89a9bd99;height:12px;width:12px;}
+        .incident-map-marker {background:#8795a1;border:2px solid #fff;
+            border-radius:50%;box-shadow:0 0 8px #8795a199;height:12px;width:12px;}
+        .incident-map-marker.priority-high {background:#ff354d;color:#ff354d;
+            box-shadow:0 0 8px #ff354d99;}
+        .incident-map-marker.priority-medium {background:#ff9f43;color:#ff9f43;
+            box-shadow:0 0 8px #ff9f4399;}
+        .incident-map-marker.priority-low {background:#48d597;color:#48d597;
+            box-shadow:0 0 8px #48d59799;}
+        .incident-map-marker.selected {border:3px solid #fff;
+            box-shadow:0 0 12px currentColor;}
         .police-station-badge {align-items:center;background:#0756a0;
             border:2px solid #fff;clip-path:polygon(50% 0,95% 15%,88% 65%,
             50% 100%,12% 65%,5% 15%);color:#fff;display:flex;
@@ -77,6 +83,19 @@ class IncidentClusterRegistry(MacroElement):
         self.cluster = cluster
 
 
+class IncidentHeatmapRegistry(MacroElement):
+    _template = Template(
+        """{% macro script(this, kwargs) %}
+        window.crimeRadarIncidentHeatmap = {{this.heatmap.get_name()}};
+        {% endmacro %}"""
+    )
+
+    def __init__(self, heatmap):
+        super().__init__()
+        self._name = "IncidentHeatmapRegistry"
+        self.heatmap = heatmap
+
+
 class MapFocusWatcher(MacroElement):
     _template = Template(
         """{% macro script(this, kwargs) %}
@@ -102,9 +121,21 @@ class MapFocusWatcher(MacroElement):
           window.crimeRadarSelectedMarkerId =
             window.crimeRadarSelectedMarkerId || null;
           const incidentCluster = window.crimeRadarIncidentMarkerCluster;
+          const incidentHeatmap = window.crimeRadarIncidentHeatmap;
           const trainingMarkers = {};
           let lastPayload = "";
           let lastFocus = "";
+          const incidentIcon = function (markerClass, selected) {
+            const size = selected ? 22 : 18;
+            const anchor = size / 2;
+            return L.divIcon({
+              className: "",
+              html: '<div class="incident-map-marker ' + markerClass +
+                (selected ? ' selected' : '') + '"></div>',
+              iconSize: [size, size],
+              iconAnchor: [anchor, anchor]
+            });
+          };
           const syncMapState = function () {
             const payload =
               window.parent.sessionStorage.getItem("crime-radar-training-cases") || "[]";
@@ -114,6 +145,7 @@ class MapFocusWatcher(MacroElement):
               incoming.forEach(function (incident) {
                 const id = String(incident.event_id);
                 activeIds.add(id);
+                const markerClass = incident.marker_class || "priority-unknown";
                 if (trainingMarkers[id]) {
                   const existingMarker = window.crimeRadarMarkers[id] &&
                     window.crimeRadarMarkers[id].marker;
@@ -121,15 +153,19 @@ class MapFocusWatcher(MacroElement):
                     existingMarker.setPopupContent(incident.popup_html);
                     trainingMarkers[id].popupHtml = incident.popup_html;
                   }
+                  if (existingMarker && trainingMarkers[id].markerClass !== markerClass) {
+                    const selected = window.crimeRadarSelectedMarkerId === id;
+                    const icon = incidentIcon(markerClass, selected);
+                    existingMarker.setIcon(icon);
+                    trainingMarkers[id].markerClass = markerClass;
+                    window.crimeRadarMarkers[id].normalIcon =
+                      incidentIcon(markerClass, false);
+                    window.crimeRadarMarkers[id].markerClass = markerClass;
+                  }
                   return;
                 }
                 const position = [incident.latitude, incident.longitude];
-                const normalIcon = L.divIcon({
-                  className: "",
-                  html: '<div class="incident-map-marker"></div>',
-                  iconSize: [18, 18],
-                  iconAnchor: [9, 9]
-                });
+                const normalIcon = incidentIcon(markerClass, false);
                 const marker = L.marker(position, {
                   icon: normalIcon,
                   title: incident.incident_type
@@ -137,11 +173,13 @@ class MapFocusWatcher(MacroElement):
                 incidentCluster.addLayer(marker);
                 trainingMarkers[id] = {
                   marker: marker,
-                  popupHtml: incident.popup_html
+                  popupHtml: incident.popup_html,
+                  markerClass: markerClass
                 };
                 window.crimeRadarMarkers[id] = {
                   marker: marker,
-                  normalIcon: normalIcon
+                  normalIcon: normalIcon,
+                  markerClass: markerClass
                 };
               });
               Object.keys(trainingMarkers).forEach(function (id) {
@@ -150,6 +188,13 @@ class MapFocusWatcher(MacroElement):
                 delete trainingMarkers[id];
                 delete window.crimeRadarMarkers[id];
               });
+              if (incidentHeatmap) {
+                incidentHeatmap.setLatLngs(incoming
+                .filter(function (incident) { return !incident.is_demo; })
+                .map(function (incident) {
+                  return [incident.latitude, incident.longitude];
+                }));
+              }
               lastPayload = payload;
             }
             const focusState = JSON.parse(
@@ -167,12 +212,7 @@ class MapFocusWatcher(MacroElement):
                 previouslySelected.marker.setIcon(previouslySelected.normalIcon);
               }
               const marker = entry.marker;
-              marker.setIcon(L.divIcon({
-                className: "",
-                html: '<div class="incident-map-marker selected"></div>',
-                iconSize: [22, 22],
-                iconAnchor: [11, 11]
-              }));
+              marker.setIcon(incidentIcon(entry.markerClass || "priority-unknown", true));
               window.crimeRadarSelectedMarkerId = focus;
               lastFocus = focusToken;
               map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 16), {
@@ -326,6 +366,17 @@ def is_training_status(status):
 
 def display_incident_status(status):
     return "OPEN" if is_training_status(status) else str(status)
+
+
+def incident_marker_class(priority):
+    normalized_priority = str(priority or "").strip().upper()
+    if normalized_priority in {"HIGH", "CRITICAL"}:
+        return "priority-high"
+    if normalized_priority == "MEDIUM":
+        return "priority-medium"
+    if normalized_priority == "LOW":
+        return "priority-low"
+    return "priority-unknown"
 
 
 def display_incident_type(incident_type, is_training):
@@ -1055,15 +1106,14 @@ def render_live_dashboard():
             )
             report_details = str(incident.get("report_details") or "").strip()
             report_context = (
-                "<br><b>UNVERIFIED USER REPORT</b>"
-                + (
-                    f"<br><b>Details:</b> {html.escape(report_details)}"
-                    if report_details
-                    else ""
-                )
+                "<br><b>SIMULATED TRAINING INCIDENT · NOT A VERIFIED CRIME</b>"
+                if is_demo
+                else "<br><b>UNVERIFIED USER REPORT</b>"
                 if is_report
                 else ""
             )
+            if is_report and report_details:
+                report_context += f"<br><b>Details:</b> {html.escape(report_details)}"
             dispatch = dispatch_by_incident.get(event_id)
             dispatch_detail = ""
             if dispatch and dispatch["station"] is not None:
@@ -1095,16 +1145,18 @@ def render_live_dashboard():
                     "latitude": float(incident["latitude"]),
                     "longitude": float(incident["longitude"]),
                     "priority": str(incident["priority"]).upper(),
+                    "marker_class": incident_marker_class(incident.get("priority")),
                     "is_demo": is_demo,
                     "popup_html": (
                         f"{'<b>ACTIVE INCIDENT</b><br>' if event_id == active_action_incident_id else ''}"
-                        f"<b>{incident_type}</b><br>"
-                        f"<b>Area:</b> {incident_address}<br>"
-                        f"<b>Reported:</b> "
+                        f"<b>Crime type:</b> {incident_type}<br>"
+                        f"<b>Location:</b> {incident_address}<br>"
+                        f"<b>Date:</b> "
                         f"{html.escape(display_incident_time(incident['timestamp']))}<br>"
                         f"<b>Incident ID:</b> "
                         f"{html.escape(display_event_id(event_id, is_demo))}<br>"
-                        f"{html.escape(str(incident['priority']))} · "
+                        f"<b>Priority:</b> {html.escape(str(incident['priority']))}<br>"
+                        f"<b>Report status:</b> "
                         f"{html.escape(display_incident_status(incident['status']))}"
                         f"{report_context}"
                         f"{dispatch_detail}"
@@ -1128,11 +1180,19 @@ def render_live_dashboard():
                     f'critical event{"s" if demo_critical_count != 1 else ""}</div>',
                     unsafe_allow_html=True,
                 )
-            st.markdown('<div class="radar-panel"><h3>Map Legend</h3><small>State outline · Tamil Nadu jurisdiction<br>'
-                        'Red dot / cluster · incidents<br>'
-                        'Blue PD badge · police station<br>'
-                        'Cyan line · received patrol telemetry only<br>'
-                        'Blue marker · received patrol asset</small></div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="radar-panel"><h3>Map Legend</h3><small>'
+                '<span style="color:#ff354d">●</span> High / critical priority<br>'
+                '<span style="color:#ff9f43">●</span> Medium priority<br>'
+                '<span style="color:#48d597">●</span> Low priority<br>'
+                '<span style="color:#8795a1">●</span> Unclassified priority<br>'
+                '<span style="color:#35c9dc">●</span> Incident cluster<br>'
+                'Heatmap · concentration of non-simulated reports; user reports are unverified<br>'
+                'Blue PD badge · police station<br>'
+                'Cyan line · received patrol telemetry only<br>'
+                'Blue marker · received patrol asset</small></div>',
+                unsafe_allow_html=True,
+            )
         with map_panel:
             toolbar_city, toolbar_scope = st.columns([2, 1])
             with toolbar_city:
@@ -1240,6 +1300,20 @@ def render_live_dashboard():
                 show=True,
             ).add_to(radar_map)
             TacticalTileStyle().add_to(radar_map.get_root())
+            incident_heatmap = HeatMap(
+                data=[],
+                name="Incident concentration",
+                radius=28,
+                blur=22,
+                min_opacity=0.25,
+                gradient={
+                    "0.2": "#35c9dc",
+                    "0.5": "#ffc247",
+                    "0.8": "#ff9f43",
+                    "1.0": "#ff354d",
+                },
+            ).add_to(radar_map)
+            IncidentHeatmapRegistry(incident_heatmap).add_to(radar_map.get_root())
             outside_mask = {
                 "type": "Feature",
                 "properties": {"name": "Outside Tamil Nadu"},
@@ -1412,15 +1486,16 @@ def render_live_dashboard():
                     incident_id = str(incident["event_id"])
                     report_details = str(incident.get("report_details") or "").strip()
                     report_context = (
-                        "<br><b>UNVERIFIED USER REPORT</b>"
-                        + (
-                            f"<br><b>Details:</b> {html.escape(report_details)}"
-                            if is_report and report_details
-                            else ""
-                        )
+                        "<br><b>SIMULATED TRAINING INCIDENT · NOT A VERIFIED CRIME</b>"
+                        if is_demo
+                        else "<br><b>UNVERIFIED USER REPORT</b>"
                         if is_report
                         else ""
                     )
+                    if is_report and report_details:
+                        report_context += (
+                            f"<br><b>Details:</b> {html.escape(report_details)}"
+                        )
                     dispatch = dispatch_by_incident.get(incident_id)
                     dispatch_detail = ""
                     if dispatch and dispatch["station"] is not None:
@@ -1448,9 +1523,10 @@ def render_live_dashboard():
                     is_selected = str(
                         st.session_state.get("map_focus_event_id", "")
                     ) == incident_id
-                    marker_classes = ["incident-map-marker"]
-                    if is_critical:
-                        marker_classes.append("critical")
+                    marker_classes = [
+                        "incident-map-marker",
+                        incident_marker_class(incident.get("priority")),
+                    ]
                     if is_selected:
                         marker_classes.append("selected")
                     marker_size = 22 if is_selected else 18
@@ -1468,13 +1544,14 @@ def render_live_dashboard():
                             incident_name
                         ),
                         popup=folium.Popup(
-                            f"<b>{incident_name}</b><br>"
-                            f"<b>Area:</b> {incident_address}<br>"
-                            f"<b>Reported:</b> "
+                            f"<b>Crime type:</b> {incident_name}<br>"
+                            f"<b>Location:</b> {incident_address}<br>"
+                            f"<b>Date:</b> "
                             f"{html.escape(display_incident_time(incident['timestamp']))}<br>"
                             f"<b>Incident ID:</b> "
                             f"{html.escape(display_event_id(incident_id, is_demo))}<br>"
-                            f"{html.escape(str(incident['priority']))} · "
+                            f"<b>Priority:</b> {html.escape(str(incident['priority']))}<br>"
+                            f"<b>Report status:</b> "
                             f"{html.escape(display_incident_status(incident['status']))}"
                             f"{report_context}"
                             f"{dispatch_detail}",
@@ -1588,6 +1665,7 @@ def render_live_dashboard():
                 st.caption(f"Displaying {len(displayed_units)} patrol marker(s).")
             elif show_patrol_units:
                 st.caption("No recent patrol telemetry received.")
+            folium.LayerControl(position="topright", collapsed=True).add_to(radar_map)
             components.html(
                 training_map_sync_html(
                     training_map_payload,
@@ -1601,7 +1679,7 @@ def render_live_dashboard():
 
             map_signature = json.dumps(
                 {
-                    "map_mode": "incremental-training-v19",
+                    "map_mode": "priority-heatmap-v20",
                     "city": map_city,
                     "show_training": show_demo_data,
                     "show_patrol_units": show_patrol_units,
