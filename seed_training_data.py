@@ -53,48 +53,6 @@ INCIDENT_LOCATIONS = [
     ("Pudukkottai Town", 10.3820, 78.8170),
 ]
 
-INCIDENT_TYPES = [
-    ("BURGLARY", "CRITICAL"),
-    ("THEFT", "HIGH"),
-    ("ASSAULT", "CRITICAL"),
-    ("VEHICLE THEFT", "MEDIUM"),
-    ("ROBBERY", "HIGH"),
-    ("BURGLARY", "CRITICAL"),
-    ("THEFT", "MEDIUM"),
-    ("ROBBERY", "HIGH"),
-]
-REGIONAL_TYPES = [
-    ("ROBBERY", "HIGH"),
-    ("THEFT", "MEDIUM"),
-    ("BURGLARY", "HIGH"),
-    ("ASSAULT", "CRITICAL"),
-    ("VEHICLE THEFT", "MEDIUM"),
-    ("THEFT", "HIGH"),
-]
-
-
-def incident_records():
-    incidents = []
-    for index, (address, latitude, longitude) in enumerate(INCIDENT_LOCATIONS):
-        incident_type, priority = (
-            INCIDENT_TYPES[index]
-            if index < len(INCIDENT_TYPES)
-            else REGIONAL_TYPES[(index - 7) % len(REGIONAL_TYPES)]
-        )
-        incidents.append(
-            {
-                "event_id": f"TRAIN-TN-{index + 1:03d}",
-                "status": "TRAINING EXERCISE",
-                "priority": priority,
-                "incident_type": incident_type,
-                "latitude": latitude,
-                "longitude": longitude,
-                "address": address,
-            }
-        )
-    return incidents
-
-
 def patrol_records():
     chennai_units = [
         ("T. Nagar", 13.0460, 80.2290),
@@ -146,21 +104,6 @@ def station_records():
 
 def seed_training_data():
     session = requests.Session()
-    response = session.get(f"{API_URL}/api/v1/active-incidents", timeout=10)
-    response.raise_for_status()
-    existing_event_ids = {
-        incident["event_id"] for incident in response.json()
-    }
-
-    added_incidents = 0
-    for incident in incident_records():
-        if incident["event_id"] in existing_event_ids:
-            continue
-        response = session.post(
-            f"{API_URL}/api/v1/ingest", json=incident, timeout=10
-        )
-        response.raise_for_status()
-        added_incidents += 1
 
     for patrol in patrol_records():
         response = session.post(
@@ -175,7 +118,7 @@ def seed_training_data():
         response.raise_for_status()
 
     print(
-        f"SQL-backed presentation data: {added_incidents} new incidents, "
+        "No incidents are seeded; public reports are stored when submitted. "
         f"{len(patrol_records())} patrol positions and "
         f"{len(station_records())} station records upserted via {API_URL}."
     )

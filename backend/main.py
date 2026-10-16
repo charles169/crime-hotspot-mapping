@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import inspect, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,25 @@ from .models import CrimeIncident, PatrolUnit, PoliceStation, SourceSyncStatus
 async def lifespan(_: FastAPI):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+
+        def ensure_report_details_column(sync_connection):
+            columns = {
+                column["name"]
+                for column in inspect(sync_connection).get_columns("crime_incidents")
+            }
+            if "report_details" not in columns:
+                sync_connection.exec_driver_sql(
+                    "ALTER TABLE crime_incidents "
+                    "ADD COLUMN report_details VARCHAR(1000) NULL"
+                )
+            if "display_after" not in columns:
+                sync_connection.exec_driver_sql(
+                    "ALTER TABLE crime_incidents "
+                    "ADD COLUMN display_after DATETIME NULL"
+                )
+
+        await connection.run_sync(ensure_report_details_column)
+
     async with SessionLocal() as db:
         incidents = await db.scalars(select(CrimeIncident))
         for incident in incidents:
@@ -52,6 +71,7 @@ class IncidentCreate(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     address: str = Field(min_length=1, max_length=250)
+    display_after: Optional[datetime] = None
 
 
 class IncidentRead(BaseModel):
@@ -66,6 +86,7 @@ class IncidentRead(BaseModel):
     latitude: float
     longitude: float
     address: str
+    report_details: Optional[str] = None
 
 
 class PatrolUnitTelemetry(BaseModel):
@@ -136,6 +157,12 @@ async def get_active_incidents(db: AsyncSession = Depends(get_db)):
     result = await db.scalars(
         select(CrimeIncident)
         .where(CrimeIncident.status != "CLEARED")
+        .where(
+            or_(
+                CrimeIncident.display_after.is_(None),
+                CrimeIncident.display_after <= datetime.utcnow(),
+            )
+        )
         .order_by(CrimeIncident.timestamp.desc())
     )
     return [

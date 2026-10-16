@@ -17,6 +17,8 @@ class CrimeIncident(Base):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     address = Column(String(250), nullable=False)
+    report_details = Column(String(1000), nullable=True)
+    display_after = Column(DateTime, nullable=True)
 
 
 class PatrolUnit(Base):
