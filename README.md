@@ -49,7 +49,7 @@ The Streamlit dashboard requires a single operator account configured in the
 git-ignored `.env` file. Add a unique username and a strong password there:
 
 ```dotenv
-CRIME_RADAR_LOGIN_USERNAME=operator
+CRIME_RADAR_LOGIN_USERNAME=crime
 CRIME_RADAR_LOGIN_PASSWORD=replace-with-a-strong-local-password
 ```
 
