@@ -1,5 +1,6 @@
 import asyncio
 import html
+import hmac
 import json
 import os
 import time
@@ -13,7 +14,11 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from branca.element import MacroElement, Template
+from dotenv import load_dotenv
 from folium.plugins import HeatMap, MarkerCluster
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
 
 with (Path(__file__).resolve().parents[1] / "backend" / "data" / "tamil_nadu.geojson").open(
     encoding="utf-8"
@@ -583,6 +588,161 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+LOGIN_USERNAME = os.getenv("CRIME_RADAR_LOGIN_USERNAME", "").strip()
+LOGIN_PASSWORD = os.getenv("CRIME_RADAR_LOGIN_PASSWORD", "")
+
+
+def render_login_page():
+    st.markdown(
+        """
+        <style>
+        [data-testid="stMainBlockContainer"] {
+            max-width: 1120px;
+            padding-top: 5vh;
+        }
+        .login-brand {
+            min-height: 410px;
+            padding: 34px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            position: relative;
+            overflow: hidden;
+            background-color: #0a1927;
+            background-image:
+                repeating-linear-gradient(0deg, transparent 0 31px, #17304455 32px),
+                repeating-linear-gradient(90deg, transparent 0 31px, #17304455 32px);
+            border: 1px solid #1b3a4d;
+            border-radius: 8px;
+        }
+        .login-brand-top, .login-brand-bottom { position: relative; z-index: 1; }
+        .login-eyebrow {
+            color: #35c9dc;
+            font-size: .72rem;
+            font-weight: 700;
+            letter-spacing: .14em;
+        }
+        .login-brand h1 {
+            color: #e3edf5;
+            font-size: 2.7rem;
+            line-height: 1.05;
+            margin: 22px 0 12px;
+        }
+        .login-brand-copy { color: #9bb4c4; font-size: 1rem; max-width: 380px; }
+        .login-scope {
+            display: flex;
+            gap: 9px;
+            align-items: center;
+            color: #ffc56c;
+            font-size: .76rem;
+            font-weight: 700;
+        }
+        .login-scope-mark {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #ffc56c;
+            border-radius: 50%;
+            box-shadow: 0 0 0 4px #ffc56c22;
+        }
+        .login-form-title { color: #e3edf5; font-size: 1.45rem; font-weight: 700; }
+        .login-form-copy { color: #86a4b8; margin-bottom: 1.25rem; }
+        div[data-testid="stAlert"] {
+            background: #292417 !important;
+            border: 1px solid #765b2a !important;
+        }
+        div[data-testid="stAlert"] p { color: #ffcf78 !important; }
+        div[data-testid="stCaptionContainer"] p { color: #9bb4c4 !important; }
+        div[data-testid="stTextInput"] label { color: #c4d7e3 !important; }
+        div[data-testid="stTextInput"] input {
+            background: #0d2232 !important;
+            color: #e3edf5 !important;
+            border-color: #31586a !important;
+        }
+        div[data-testid="stFormSubmitButton"] button {
+            background: #35c9dc;
+            color: #07111d;
+            border: 0;
+            font-weight: 700;
+        }
+        div[data-testid="stFormSubmitButton"] button:disabled {
+            background: #203642;
+            color: #91a8b5;
+            opacity: 1;
+        }
+        @media (max-width: 700px) {
+            [data-testid="stMainBlockContainer"] { padding: 1rem .75rem; }
+            .login-brand { min-height: 270px; padding: 24px; }
+            .login-brand h1 { font-size: 2.2rem; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    brand_column, form_column = st.columns([1.1, 0.9], gap="large")
+    with brand_column:
+        st.markdown(
+            """
+            <section class="login-brand">
+              <div class="login-brand-top">
+                <div class="login-eyebrow">SECURE OPERATIONS ACCESS</div>
+                <h1>C.R.I.M.E.<br>Radar</h1>
+                <p class="login-brand-copy">
+                  Coordinated incident awareness for Tamil Nadu.
+                </p>
+              </div>
+              <div class="login-brand-bottom">
+                <div class="login-scope">
+                  <span class="login-scope-mark"></span>
+                  PRIVATE OPERATOR DASHBOARD · TAMIL NADU ONLY
+                </div>
+              </div>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
+    with form_column:
+        st.markdown(
+            '<div class="login-form-title">Operator sign in</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="login-form-copy">Use your assigned dashboard credentials.</div>',
+            unsafe_allow_html=True,
+        )
+        login_configured = bool(LOGIN_USERNAME and LOGIN_PASSWORD)
+        if not login_configured:
+            st.warning("Operator login is not configured for this installation.")
+            st.caption(
+                "Add CRIME_RADAR_LOGIN_USERNAME and CRIME_RADAR_LOGIN_PASSWORD "
+                "to the ignored .env file, then restart the dashboard."
+            )
+
+        with st.form("operator-login"):
+            username = st.text_input("Operator ID", autocomplete="username")
+            password = st.text_input(
+                "Password", type="password", autocomplete="current-password"
+            )
+            submitted = st.form_submit_button(
+                "Sign in",
+                use_container_width=True,
+                disabled=not login_configured,
+            )
+
+        if submitted:
+            username_matches = hmac.compare_digest(username, LOGIN_USERNAME)
+            password_matches = hmac.compare_digest(password, LOGIN_PASSWORD)
+            if username_matches and password_matches:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            st.error("Credentials not recognized.")
+
+
+if not st.session_state.get("authenticated", False):
+    render_login_page()
+    st.stop()
+
 header_left, header_right = st.columns([4, 1])
 with header_left:
     st.markdown('<p class="radar-title">CRIME HOTSPOT MAPPING — TAMIL NADU</p>', unsafe_allow_html=True)
@@ -591,6 +751,9 @@ with header_left:
         unsafe_allow_html=True,
     )
 with header_right:
+    if st.button("Sign out", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
     st.markdown(
         f'<p class="radar-no-feed">● NO LIVE AGENCY FEED<br>'
         f'<span style="font-weight:400">{time.strftime("%H:%M")} LOCAL · TN ONLY</span></p>',

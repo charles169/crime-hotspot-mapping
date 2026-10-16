@@ -43,6 +43,21 @@ The dashboard also shows in-app toast alerts for newly detected critical
 incidents. API documentation is at
 <http://127.0.0.1:8000/docs>.
 
+## Dashboard operator login
+
+The Streamlit dashboard requires a single operator account configured in the
+git-ignored `.env` file. Add a unique username and a strong password there:
+
+```dotenv
+CRIME_RADAR_LOGIN_USERNAME=operator
+CRIME_RADAR_LOGIN_PASSWORD=replace-with-a-strong-local-password
+```
+
+Restart the dashboard after changing these values. Do not commit `.env` or
+reuse the MySQL password for dashboard access. This login gates the Streamlit
+dashboard; keep the API bound to `127.0.0.1` unless API authentication is added
+before exposing it to other machines.
+
 ## Separate public report portal prototype
 
 `public_reporting.py` serves a standalone, mobile-friendly report-only page at
