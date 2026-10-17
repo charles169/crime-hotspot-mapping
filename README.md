@@ -42,31 +42,16 @@ when an operator chooses to show a case location.
 The dashboard also shows in-app toast alerts for newly detected critical
 incidents. API documentation is at
 <http://127.0.0.1:8000/docs>.
-
-The **Crime trend analytics** panel compares daily incident counts, incident
-types, and priorities across a selected period and the preceding equal-length
-period. Simulated/demo records are excluded by default. Stored public reports
-are unverified, and the charts describe recorded reports rather than forecast
-crime; no verified live agency feed is configured. It flags unusual days when
-reports reach at least three and exceed both twice the prior seven-day average
-and that average by at least three. Higher-severity flags use a five-report,
-three-times / five-report increase threshold. These are review cues only, not
-predictions or verification of an incident.
-
-## Dashboard operator login
-
-The Streamlit dashboard requires a single operator account configured in the
-git-ignored `.env` file. Add a unique username and a strong password there:
-
-```dotenv
-CRIME_RADAR_LOGIN_USERNAME=operator
-CRIME_RADAR_LOGIN_PASSWORD=replace-with-a-strong-local-password
-```
-
-Restart the dashboard after changing these values. Do not commit `.env` or
-reuse the MySQL password for dashboard access. This login gates the Streamlit
-dashboard; keep the API bound to `127.0.0.1` unless API authentication is added
-before exposing it to other machines.
+The Station Route Planner lets an operator choose an active or queued incident,
+route from a nearby station to the crime spot, and compare an alternate station.
+Road distance and estimated travel time come from OSRM and OpenStreetMap data;
+ETA does not include
+live traffic and does not dispatch anyone. Exact incident and station coordinates
+are sent to the configured OSRM service only after the operator enables
+coordinate sharing. The default is the public OSRM demo router; for sensitive or
+production use, configure `CRIME_RADAR_ROUTING_URL` to a self-hosted OSRM server.
+Results are cached for five minutes. The dashboard does not draw station or
+patrol route lines; straight-line distance remains listed for nearby stations.
 
 ## Separate public report portal prototype
 
@@ -163,8 +148,8 @@ and replace it deliberately; importing is not a merge. Treat the dump as
 sensitive data and do not put it in a public folder or repository.
 
 The dashboard uses an analytics / filters / map / incident-panels layout. The
-map opens to a Tamil Nadu-wide view, with city-level focus options across the
-state. It uses Esri's dark-gray basemap, masks map
+map opens to Chennai at city scale, with a Tamil Nadu-wide view and other
+city-level focus options available. It uses Esri's dark-gray basemap, masks map
 tiles outside Tamil Nadu, and restricts panning to the state's bounding area.
 Esri basemap tiles are attributed in the map.
 
