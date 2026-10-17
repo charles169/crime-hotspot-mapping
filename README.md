@@ -52,6 +52,14 @@ recreate the map or flash the tiles.
 The dashboard also shows in-app toast alerts for newly detected critical
 incidents. API documentation is at
 <http://127.0.0.1:8000/docs>.
+
+Select **Crime trend analysis** in the dashboard navigation to compare daily
+incident counts, types, and priorities across a selected period and the
+preceding equal-length period. Simulated/demo records are excluded by default.
+The charts describe recorded reports, not forecasts or verified incidents.
+The view flags unusual reporting days for operator review; it does not predict
+crime.
+
 The Station Route Planner lets an operator choose an active or queued incident,
 route from a nearby station to the crime spot, and compare an alternate station.
 Road distance and estimated travel time come from OSRM and OpenStreetMap data;

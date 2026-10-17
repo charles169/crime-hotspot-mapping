@@ -13,7 +13,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from branca.element import MacroElement, Template
-from folium.plugins import HeatMap, MarkerCluster
+from folium.plugins import HeatMap
 
 with (Path(__file__).resolve().parents[1] / "backend" / "data" / "tamil_nadu.geojson").open(
     encoding="utf-8"
@@ -41,6 +41,11 @@ class TacticalTileStyle(MacroElement):
             transform:translate(-50%,-50%);width:4px;}
         .incident-map-marker.selected {background:#ff354d;border:3px solid #fff;
             box-shadow:0 0 12px #ff354d;}
+        .selected-incident-target {position:relative;width:30px;height:30px;
+            background:#ff354d;border:4px solid #fff;border-radius:50%;
+            box-shadow:0 0 0 7px #ff354d55,0 0 20px 8px #ff354dcc;}
+        .selected-incident-target::after {position:absolute;content:"";
+            inset:7px;background:#fff;border-radius:50%;}
         .leaflet-popup-content-wrapper {background:#081a2b;
             border:1px solid #2c9bb1;border-radius:7px;
             box-shadow:0 0 18px rgba(20,190,220,.2);color:#d7eaf1;}
@@ -316,8 +321,14 @@ def nearest_training_stations(
 
 def focus_incident_on_map(event_id):
     st.session_state["map_focus_event_id"] = str(event_id)
-    st.session_state["route-planner-incident"] = str(event_id)
-    st.session_state["map_focus_nonce"] = str(time.time_ns())
+
+
+def toggle_incident_map_focus(event_id):
+    event_id = str(event_id)
+    if st.session_state.get("map_focus_event_id") == event_id:
+        st.session_state.pop("map_focus_event_id", None)
+        return
+    st.session_state["map_focus_event_id"] = event_id
 
 
 def record_incident_station_alert(
@@ -475,12 +486,9 @@ def incident_hud_html(incident, extra_html="", is_active=False):
     )
 
 
-def training_map_sync_html(training_cases, focus_event_id=None, focus_nonce=None):
-    payload = json.dumps(training_cases, separators=(",", ":"), ensure_ascii=True)
-    focus_payload = json.dumps(
-        {"event_id": focus_event_id, "nonce": focus_nonce},
-        separators=(",", ":"),
-        ensure_ascii=True,
+def training_map_sync_html(selection):
+    selection_payload = json.dumps(
+        selection, separators=(",", ":"), ensure_ascii=True
     )
     return (
         "<script>window.frameElement.style.display='none';"
@@ -1404,6 +1412,79 @@ def render_live_dashboard():
                 used_unit_ids.add(unit_id)
 
         st.session_state["demo_dispatch_assignments"] = assignments
+        dispatch_by_incident = {}
+        for incident in current_critical:
+            event_id = str(incident["event_id"])
+            unit_id = assignments.get(event_id)
+            if unit_id is not None:
+                unit = unit_by_id[unit_id]
+                manual_assignment = manual_assignments.get(event_id)
+                station = (
+                    station_by_id[manual_assignment["station_id"]]
+                    if manual_assignment
+                    else next(
+                        (
+                            item
+                            for item in police_stations
+                            if item["unit_id"] == unit_id
+                        ),
+                        None,
+                    )
+                )
+                if station is None:
+                    station, _ = nearest_training_station(
+                        incident["latitude"], incident["longitude"], police_stations
+                    )
+                dispatch_by_incident[event_id] = {
+                    "unit": unit,
+                    "distance_km": haversine(
+                        unit["longitude"],
+                        unit["latitude"],
+                        incident["longitude"],
+                        incident["latitude"],
+                    ),
+                    "station": station,
+                    "station_distance_km": (
+                        haversine(
+                            station["longitude"],
+                            station["latitude"],
+                            incident["longitude"],
+                            incident["latitude"],
+                        )
+                        if station is not None
+                        else None
+                    ),
+                    "nearby_stations": nearest_training_stations(
+                        incident["latitude"],
+                        incident["longitude"],
+                        police_stations,
+                        max_count=1,
+                        exclude_station_id=station["station_id"] if station else None,
+                    ),
+                    "manual": event_id in manual_assignments,
+                }
+            else:
+                station, station_distance_km = nearest_training_station(
+                    incident["latitude"], incident["longitude"], police_stations
+                )
+                nearby_stations = nearest_training_stations(
+                    incident["latitude"],
+                    incident["longitude"],
+                    police_stations,
+                    max_count=1,
+                    exclude_station_id=station["station_id"] if station else None,
+                )
+                dispatch_by_incident[event_id] = {
+                    "unit": None,
+                    "distance_km": None,
+                    "station": station,
+                    "station_distance_km": station_distance_km,
+                    "nearby_stations": nearby_stations,
+                    "manual": False,
+                }
+            dispatch_by_incident[event_id]["manual"] = (
+                event_id in manual_assignments
+            )
 
         incident_types = sorted(df["incident_type"].dropna().unique()) if not df.empty else []
         priorities = sorted(df["priority"].dropna().unique()) if not df.empty else []
@@ -1538,7 +1619,7 @@ def render_live_dashboard():
             selected_type = st.selectbox("Crime type", ["All types", *incident_types])
             selected_priority = st.selectbox("Priority", ["All priorities", *priorities])
             selected_status = st.selectbox("Status", ["All statuses", *incident_statuses])
-            show_heatmap = st.checkbox("Incident heat layer", value=True)
+            show_heatmap = st.checkbox("Incident heat layer", value=False)
             show_patrol_units = st.checkbox("Show patrol telemetry", value=True)
 
         filtered_df = df.copy()
@@ -1604,7 +1685,6 @@ def render_live_dashboard():
             if current_alert_id is not None
             else None
         )
-        focused_event_id = st.session_state.get("map_focus_event_id")
         map_df = filtered_df.copy()
         if not map_df.empty:
             staged_incidents = map_df["is_demo"].astype(bool)
@@ -1617,11 +1697,6 @@ def render_live_dashboard():
         active_action_incident_id = (
             str(incident_action_queue[0]) if incident_action_queue else None
         )
-        map_focus_ids = {
-            str(event_id)
-            for event_id in (focused_event_id, active_action_incident_id)
-            if event_id is not None
-        }
         if not df.empty:
             visible_report_ids = set(
                 map_df.loc[map_df["is_report"], "event_id"].astype(str)
@@ -1631,64 +1706,17 @@ def render_live_dashboard():
             ]
             if not new_report_rows.empty:
                 map_df = pd.concat([map_df, new_report_rows], ignore_index=True)
-        for event_id in map_focus_ids:
-            if not df.empty and not map_df["event_id"].astype(str).eq(event_id).any():
-                focus_rows = df[df["event_id"].astype(str) == event_id]
-                if not focus_rows.empty and (
-                    not bool(focus_rows.iloc[0]["is_demo"])
-                    or event_id in released_action_incident_ids
-                ):
-                    map_df = pd.concat([map_df, focus_rows], ignore_index=True)
-        training_map_events = (
-            map_df.to_dict(orient="records") if not map_df.empty else []
-        )
-        training_map_payload = []
-        for incident in training_map_events:
-            event_id = str(incident["event_id"])
-            is_demo = bool(incident["is_demo"])
-            incident_type = html.escape(
-                display_incident_type(incident["incident_type"], is_demo)
-            )
-            dispatch = dispatch_by_incident.get(event_id)
-            dispatch_detail = ""
-            if dispatch and dispatch["station"] is not None:
-                dispatch_detail = (
-                    f"<br><b>NEAREST STATION:</b> "
-                    f"{html.escape(dispatch['station']['name'])}"
-                    f" · {dispatch['station_distance_km']:.2f} km away"
-                )
-            if dispatch and dispatch.get("nearby_stations"):
-                nearby_html = "<br><b>NEARBY STATIONS:</b>"
-                for nearby_station, dist_km in dispatch["nearby_stations"][:1]:
-                    if nearby_station["station_id"] != dispatch.get("station", {}).get("station_id"):
-                        nearby_html += (
-                            f"<br>{html.escape(nearby_station['name'])} · {dist_km:.2f} km"
-                        )
-                dispatch_detail += nearby_html
-            if dispatch:
-                if dispatch["unit"] is not None:
-                    dispatch_detail += (
-                        f"<br><b>{'MANUAL ' if dispatch['manual'] else ''}"
-                        f"PATROL ASSIGNED:</b> "
-                        f"{html.escape(str(dispatch['unit']['unit_id']).replace('SIM-TN-UNIT-', 'UNIT-'))}"
-                        f" · {dispatch['distance_km']:.2f} km away"
-                    )
-            training_map_payload.append(
-                {
-                    "event_id": event_id,
-                    "incident_type": incident_type,
-                    "latitude": float(incident["latitude"]),
-                    "longitude": float(incident["longitude"]),
-                    "priority": str(incident["priority"]).upper(),
-                    "is_demo": is_demo,
-                    "popup_html": incident_hud_html(
-                        incident,
-                        extra_html=dispatch_detail,
-                        is_active=event_id == active_action_incident_id,
-                    ),
-                }
-            )
-        render_map_df = map_df.iloc[0:0].copy()
+        if (
+            active_action_incident_id is not None
+            and not df.empty
+            and not map_df["event_id"].astype(str).eq(active_action_incident_id).any()
+        ):
+            active_rows = df[df["event_id"].astype(str) == active_action_incident_id]
+            if not active_rows.empty and (
+                not bool(active_rows.iloc[0]["is_demo"])
+                or active_action_incident_id in released_action_incident_ids
+            ):
+                map_df = pd.concat([map_df, active_rows], ignore_index=True)
         critical_df = filtered_df[filtered_df["priority"].str.upper() == "CRITICAL"] if not filtered_df.empty else filtered_df
         target = critical_df.iloc[0] if not critical_df.empty else (filtered_df.iloc[0] if not filtered_df.empty else None)
 
@@ -1789,50 +1817,66 @@ def render_live_dashboard():
                 [south - 0.1, west - 0.1],
                 [north + 0.1, east + 0.1],
             ]
-            station_reference_id = st.session_state.get("map_focus_event_id")
-            station_reference_rows = (
+            selected_map_incident_id = st.session_state.get("map_focus_event_id")
+            selected_map_incident_rows = (
                 df.loc[
-                    df["event_id"].astype(str).eq(str(station_reference_id))
+                    df["event_id"].astype(str).eq(str(selected_map_incident_id))
                 ]
-                if station_reference_id is not None and not df.empty
+                if selected_map_incident_id is not None and not df.empty
                 else pd.DataFrame()
             )
-            station_reference = (
-                station_reference_rows.iloc[0].to_dict()
-                if not station_reference_rows.empty
+            selected_map_incident = (
+                selected_map_incident_rows.iloc[0].to_dict()
+                if not selected_map_incident_rows.empty
                 else None
             )
+            if selected_map_incident is None and selected_map_incident_id is not None:
+                selected_map_incident = next(
+                    (
+                        incident
+                        for incident in st.session_state.get(
+                            "previous_action_incidents", []
+                        )
+                        if str(incident["event_id"]) == str(selected_map_incident_id)
+                    ),
+                    None,
+                )
             nearby_map_stations = (
                 nearest_training_stations(
-                    float(station_reference["latitude"]),
-                    float(station_reference["longitude"]),
+                    float(selected_map_incident["latitude"]),
+                    float(selected_map_incident["longitude"]),
                     police_stations,
                     max_count=5,
                     max_distance_km=35,
                 )
-                if station_reference is not None
+                if selected_map_incident is not None
                 else []
             )
             map_selection = None
-            if station_reference is not None:
-                is_demo = bool(station_reference["is_demo"])
+            if selected_map_incident is not None:
+                is_demo = bool(
+                    selected_map_incident.get(
+                        "is_demo",
+                        is_training_status(selected_map_incident.get("status", "")),
+                    )
+                )
                 incident_name = html.escape(
                     display_incident_type(
-                        station_reference["incident_type"], is_demo
+                        selected_map_incident["incident_type"], is_demo
                     )
                 )
                 incident_address = html.escape(
-                    display_incident_address(station_reference["address"], is_demo)
+                    display_incident_address(selected_map_incident["address"], is_demo)
                 )
                 map_selection = {
                     "incident": {
-                        "latitude": float(station_reference["latitude"]),
-                        "longitude": float(station_reference["longitude"]),
+                        "latitude": float(selected_map_incident["latitude"]),
+                        "longitude": float(selected_map_incident["longitude"]),
                         "popup_html": (
                             f"<b>{incident_name}</b><br>"
                             f"<b>Area:</b> {incident_address}<br>"
                             f"<b>Reported:</b> "
-                            f"{html.escape(display_incident_time(station_reference['timestamp']))}"
+                            f"{html.escape(display_incident_time(selected_map_incident.get('timestamp')))}"
                         ),
                     },
                     "stations": [
@@ -1966,31 +2010,30 @@ def render_live_dashboard():
                     "fillOpacity": 0.16,
                 },
             ).add_to(radar_map)
-            station_reference_id = (
+            route_reference_id = (
                 st.session_state.get("route-planner-incident")
-                or st.session_state.get("map_focus_event_id")
                 or active_action_incident_id
             )
-            station_reference_rows = (
+            route_reference_rows = (
                 df.loc[
-                    df["event_id"].astype(str).eq(str(station_reference_id))
+                    df["event_id"].astype(str).eq(str(route_reference_id))
                 ]
-                if station_reference_id is not None and not df.empty
+                if route_reference_id is not None and not df.empty
                 else pd.DataFrame()
             )
-            station_reference = (
-                station_reference_rows.iloc[0].to_dict()
-                if not station_reference_rows.empty
+            route_reference = (
+                route_reference_rows.iloc[0].to_dict()
+                if not route_reference_rows.empty
                 else None
             )
-            if station_reference is None:
-                station_reference = next(
+            if route_reference is None:
+                route_reference = next(
                     (
                         incident
                         for incident in st.session_state.get(
                             "previous_action_incidents", []
                         )
-                        if str(incident["event_id"]) == str(station_reference_id)
+                        if str(incident["event_id"]) == str(route_reference_id)
                     ),
                     None,
                 )
@@ -2002,10 +2045,10 @@ def render_live_dashboard():
             route_coordinates_shared = st.session_state.get(
                 "route-sharing-consent", False
             )
-            if station_reference is not None:
+            if route_reference is not None:
                 nearby_incident_stations = nearest_training_stations(
-                    float(station_reference["latitude"]),
-                    float(station_reference["longitude"]),
+                    float(route_reference["latitude"]),
+                    float(route_reference["longitude"]),
                     police_stations,
                     max_distance_km=35,
                 )
@@ -2018,7 +2061,7 @@ def render_live_dashboard():
                         for station, _ in nearby_incident_stations
                     }
                     route_station_ids = list(route_station_by_id)
-                    route_station_key = f"route-station-{station_reference_id}"
+                    route_station_key = f"route-station-{route_reference_id}"
                     selected_route_station_id = str(
                         st.session_state.get(route_station_key, route_station_ids[0])
                     )
@@ -2034,7 +2077,7 @@ def render_live_dashboard():
                     ]
                     if comparison_station_ids:
                         comparison_key = (
-                            f"route-compare-{station_reference_id}-"
+                            f"route-compare-{route_reference_id}-"
                             f"{selected_route_station_id}"
                         )
                         comparison_station_id = str(
@@ -2054,8 +2097,8 @@ def render_live_dashboard():
                                 road_routes[station_id] = get_road_route(
                                     float(destination_station["latitude"]),
                                     float(destination_station["longitude"]),
-                                    float(station_reference["latitude"]),
-                                    float(station_reference["longitude"]),
+                                    float(route_reference["latitude"]),
+                                    float(route_reference["longitude"]),
                                 )
                             except (
                                 requests.RequestException,
@@ -2066,167 +2109,6 @@ def render_live_dashboard():
                                 route_errors[station_id] = (
                                     "Road distance and ETA are unavailable."
                                 )
-            for station in police_stations:
-                city_center = city_centers[map_city]
-                is_near_map_city = (
-                    haversine(
-                        city_center[1],
-                        city_center[0],
-                        station["longitude"],
-                        station["latitude"],
-                    )
-                    <= 35
-                )
-                if (
-                    not is_near_map_city
-                    and station["station_id"] not in incident_area_station_ids
-                ):
-                    continue
-                nearest_incident = min(
-                    map_df.to_dict(orient="records"),
-                    key=lambda incident: haversine(
-                        station["longitude"],
-                        station["latitude"],
-                        incident["longitude"],
-                        incident["latitude"],
-                    ),
-                    default=None,
-                )
-                station_details = (
-                    f"<b>Area:</b> "
-                    f"{html.escape(station['name'].removesuffix(' Station'))}<br>"
-                    "Police station location"
-                )
-                if station_reference is not None:
-                    station_distance = haversine(
-                        station["longitude"],
-                        station["latitude"],
-                        float(station_reference["longitude"]),
-                        float(station_reference["latitude"]),
-                    )
-                    station_details += (
-                        f"<br><b>Distance from selected incident:</b> "
-                        f"{station_distance:.2f} km"
-                    )
-                elif nearest_incident is not None:
-                    nearest_distance = haversine(
-                        station["longitude"],
-                        station["latitude"],
-                        nearest_incident["longitude"],
-                        nearest_incident["latitude"],
-                    )
-                    station_details += (
-                        f"<br><b>Nearest displayed incident:</b> "
-                        f"{html.escape(display_incident_type(nearest_incident['incident_type'], bool(nearest_incident['is_demo'])))}"
-                        f"<br><b>Distance:</b> {nearest_distance:.2f} km"
-                    )
-                folium.Marker(
-                    location=[station["latitude"], station["longitude"]],
-                    popup=(
-                        f"<b>{html.escape(station['name'])}</b><br>"
-                        f"{station_details}"
-                    ),
-                    tooltip=html.escape(station["name"]),
-                    icon=folium.DivIcon(
-                        html=(
-                            '<div class="police-station-badge">PD</div>'
-                        ),
-                        icon_size=(32, 34),
-                        icon_anchor=(16, 17),
-                    ),
-                ).add_to(radar_map)
-            incident_cluster = MarkerCluster(
-                name="Incident markers",
-                icon_create_function=(
-                    "function(cluster) {"
-                    "return L.divIcon({"
-                    "html: '<div class=\"incident-cluster-icon\" "
-                    "title=\"Incident locations · click to zoom\">"
-                    "<div class=\"incident-cluster-dot\"></div></div>',"
-                    "className: '', iconSize: L.point(34, 34)"
-                    "});}"
-                ),
-                options={
-                    "maxClusterRadius": 42,
-                    "disableClusteringAtZoom": 16,
-                    "spiderfyOnMaxZoom": True,
-                    "showCoverageOnHover": False,
-                    "animate": False,
-                    "animateAddingMarkers": False,
-                },
-            ).add_to(radar_map)
-            IncidentClusterRegistry(incident_cluster).add_to(radar_map)
-            if not render_map_df.empty:
-                for _, incident in render_map_df.iterrows():
-                    is_demo = bool(incident["is_demo"])
-                    is_report = bool(incident["is_report"])
-                    is_critical = str(incident["priority"]).upper() == "CRITICAL"
-                    incident_location = [incident["latitude"], incident["longitude"]]
-                    incident_name = html.escape(
-                        display_incident_type(incident["incident_type"], is_demo)
-                    )
-                    incident_address = html.escape(
-                        display_incident_address(incident["address"], is_demo)
-                    )
-                    incident_id = str(incident["event_id"])
-                    dispatch = dispatch_by_incident.get(incident_id)
-                    dispatch_detail = ""
-                    if dispatch and dispatch["station"] is not None:
-                        dispatch_detail = (
-                            f"<br><b>NEAREST STATION:</b> "
-                            f"{html.escape(dispatch['station']['name'])}"
-                            f" · {dispatch['station_distance_km']:.2f} km away"
-                        )
-                    if dispatch and dispatch.get("nearby_stations"):
-                        nearby_html = "<br><b>NEARBY STATIONS:</b>"
-                        for nearby_station, dist_km in dispatch["nearby_stations"][:1]:
-                            if nearby_station["station_id"] != dispatch.get("station", {}).get("station_id"):
-                                nearby_html += (
-                                    f"<br>{html.escape(nearby_station['name'])} · {dist_km:.2f} km"
-                                )
-                        dispatch_detail += nearby_html
-                    if dispatch:
-                        if dispatch["unit"] is not None:
-                            dispatch_detail += (
-                                f"<br><b>{'MANUAL ' if dispatch['manual'] else ''}"
-                                f"PATROL ASSIGNED:</b> "
-                                f"{html.escape(str(dispatch['unit']['unit_id']).replace('SIM-TN-UNIT-', 'UNIT-'))}"
-                                f" · {dispatch['distance_km']:.2f} km away"
-                            )
-                    is_selected = str(
-                        st.session_state.get("map_focus_event_id", "")
-                    ) == incident_id
-                    marker_classes = ["incident-map-marker"]
-                    if is_critical:
-                        marker_classes.append("critical")
-                    if is_selected:
-                        marker_classes.append("selected")
-                    marker_size = 22 if is_selected else 18
-                    marker_anchor = marker_size // 2
-                    incident_marker = folium.Marker(
-                        location=incident_location,
-                        icon=folium.DivIcon(
-                            html=(
-                                f'<div class="{" ".join(marker_classes)}"></div>'
-                            ),
-                            icon_size=(marker_size, marker_size),
-                            icon_anchor=(marker_anchor, marker_anchor),
-                        ),
-                        tooltip=(
-                            incident_name
-                        ),
-                        popup=folium.Popup(
-                            incident_hud_html(
-                                incident,
-                                extra_html=dispatch_detail,
-                            ),
-                            max_width=280,
-                            show=False,
-                        ),
-                    ).add_to(incident_cluster)
-                    IncidentMarkerRegistry(incident_id, incident_marker).add_to(
-                        radar_map
-                    )
             incident_targets = (
                 filtered_df.loc[
                     ~filtered_df["is_demo"] & ~filtered_df["is_report"]
@@ -2325,7 +2207,7 @@ def render_live_dashboard():
                     "city": map_city,
                     "show_training": show_demo_data,
                     "show_patrol_units": show_patrol_units,
-                    "route_incident": station_reference_id,
+                    "route_incident": route_reference_id,
                     "route_coordinates_shared": route_coordinates_shared,
                     "heat_points": heat_points,
                     "route_stations": [
@@ -2349,7 +2231,7 @@ def render_live_dashboard():
                 f"Boundary: [geoBoundaries India ADM1 · Tamil Nadu]"
                 f"({source_status['boundary_url']}) · {source_status['boundary_license']}"
             )
-            if station_reference is None:
+            if selected_map_incident is None:
                 st.caption(
                     "Tamil Nadu view · Police station markers are hidden. Select "
                     "“Show incident and nearby stations” on a case to reveal its "
@@ -2357,8 +2239,8 @@ def render_live_dashboard():
                 )
             else:
                 st.caption(
-                    f"Selected incident · {float(station_reference['latitude']):.5f}, "
-                    f"{float(station_reference['longitude']):.5f} · "
+                    f"Selected incident · {float(selected_map_incident['latitude']):.5f}, "
+                    f"{float(selected_map_incident['longitude']):.5f} · "
                     f"{len(nearby_map_stations)} nearby police station marker(s). "
                     "Choose “Clear map selection” on the case to hide them."
                 )
