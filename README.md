@@ -31,14 +31,24 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 streamlit run frontend/app.py
 ```
 
-Open the dashboard at <http://127.0.0.1:8501>. It polls the SQL-backed API
-every two seconds so submitted public reports appear promptly. Cases rotate
-automatically every five seconds in the incident alert panel, and previous
-cases remain queued there with controls to show their location and send a
-simulated station alert. Nearby stations appear as blue PD badges and incidents
-as red dots on the map. Operators can choose a station from the incident's
+Open the dashboard at <http://127.0.0.1:8501>. Use **Refresh dashboard data**
+to fetch the latest SQL-backed incidents and patrol data; the map does not
+automatically rerender between refreshes. Cases advance when dashboard data is
+refreshed, and previous cases remain queued in the incident panel with controls
+to show their location and send a simulated station alert. Incident and police
+station markers are hidden until an operator selects a case. Operators can
+choose a station from the incident's
 nearby-station list before sending a simulated alert. Map movement happens only
 when an operator chooses to show a case location.
+The map opens in a dark, Chennai street-level view, with area selection, layer
+switching, fullscreen controls, and an on-map legend. Panning is confined to
+Tamil Nadu and zooming is clamped to street/city scale, including saved map
+views, so it cannot leave the jurisdiction or zoom out to a country-scale
+overview. Selecting **Show incident and nearby stations** frames the incident
+and up to five nearby police stations within 35 km; clearing the selection
+hides both marker types and smoothly returns to the map view you were using before selection. Selection
+updates the existing map overlay, so choosing or clearing a case does not
+recreate the map or flash the tiles.
 The dashboard also shows in-app toast alerts for newly detected critical
 incidents. API documentation is at
 <http://127.0.0.1:8000/docs>.
@@ -155,8 +165,8 @@ Esri basemap tiles are attributed in the map.
 
 The dashboard's **Show incidents** switch is enabled by default. Public reports
 submitted through the report portal are stored as `PENDING_REVIEW` /
-`UNVERIFIED` in MySQL and polled by the dashboard every three seconds. New reports
-appear on the map and in the incident queue without requiring a page reload.
+`UNVERIFIED` in MySQL and polled by the dashboard when dashboard data is refreshed. New reports appear on the map and in the
+incident queue after refresh.
 Patrol and station positions are loaded from MySQL; the reference-data seeder
 below does not create incident records. Presentation/demo incident seeders are
 disabled by default. To add 300 clearly marked synthetic records for a
@@ -181,10 +191,8 @@ and status, and address search matches part of an address without case
 sensitivity.
 The **Most Reported Area** insight counts the leading area among the incidents
 in the current filtered results and shows ties. Incident panels are sorted
-newest first. Incident markers are updated inside the existing Leaflet map
-during dashboard refreshes without rebuilding the map or reloading its tiles.
-Use **Show location on map** on the active incident card to center the map on
-that incident, highlight it, and open its popup.
+newest first. Use **Show incident and nearby stations** on an incident card to
+smoothly frame the incident and nearby police stations in the map.
 
 The selected critical incident shows a 1.5 km containment ring; only one
 ring is displayed at a time to keep overlapping zones readable. Intercept
@@ -206,11 +214,12 @@ operator choose a station and available patrol; each patrol can be assigned
 to only one active incident. Clear a manual assignment to return to automatic
 matching. Choices are held in the current dashboard session and never contact
 or dispatch real officers.
-Overlapping incident markers appear as a plain location dot instead of a
-numbered cluster; click it to zoom in and separate the incidents. Clicking an
-incident shows its type, area, local report time, status, and nearest station
-when available. Clicking a station shows its area and the nearest displayed
-incident with report time and distance. The left filters
+Incident locations and police-station markers are hidden until a case is
+selected. Selecting **Show incident and nearby stations** frames the incident
+and displays nearby police-station shields; clearing the selection hides the
+markers. Clicking an incident shows its type, area, local report
+time, status, and nearest station when available. Clicking a station shows its
+area and the nearest displayed incident with report time and distance. The left filters
 dashboard slides open when hovered and closes when the pointer leaves. From an
 incident's manual-assignment panel, **Record station message** records the
 selected assignment and note in the session-only message log. It does not

@@ -252,39 +252,68 @@ async def public_report_form():
     crossorigin="">
   <style>
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: #07111d; color: #d7e4ef;
-      font: 16px system-ui, sans-serif; }}
-    main {{ max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }}
-    h1 {{ margin-bottom: 6px; font-size: 1.65rem; }}
-    .intro, .notice {{ color: #a8bdcc; line-height: 1.55; }}
-    .notice {{ padding: 12px; background: #382b16; border-radius: 6px; }}
-    .emergency-note {{ padding: 8px 10px; margin: 12px 0; background: #35151c;
-      border-left: 3px solid #ff5364; border-radius: 5px; font-size: .9rem; }}
-    form {{ display: grid; gap: 14px; }}
-    label {{ display: grid; gap: 6px; font-weight: 650; }}
+    body {{ margin: 0; color: #e3edf5; font: 16px/1.5 system-ui, sans-serif;
+      background: radial-gradient(ellipse at 12% 0%, #12506b44, transparent 38%),
+        radial-gradient(ellipse at 92% 16%, #493d7140, transparent 34%), #07111d; }}
+    main {{ max-width: 820px; margin: 0 auto; padding: 38px 20px 56px; }}
+    .portal-header {{ display: flex; align-items: center; gap: 16px;
+      margin-bottom: 22px; }}
+    .portal-brand-mark {{ display: grid; place-items: center; flex: 0 0 52px;
+      width: 52px; height: 52px; color: #07111d; background:
+      linear-gradient(145deg, #6be6f2, #27a9c0); border-radius: 15px;
+      box-shadow: 0 0 26px #35c9dc38; font-size: 1.35rem; font-weight: 900; }}
+    .portal-kicker {{ margin: 0 0 3px; color: #63d4e3; font-size: .68rem;
+      font-weight: 800; letter-spacing: .15em; }}
+    h1 {{ margin: 0; color: #f1f7fb; font-size: clamp(1.7rem, 5vw, 2.35rem);
+      letter-spacing: -.04em; line-height: 1.1; }}
+    .intro, .notice {{ color: #a8bdcc; line-height: 1.6; }}
+    .intro {{ margin: 0 0 18px; }}
+    .notice {{ padding: 14px 16px; background: #382b16;
+      border: 1px solid #765b2a; border-radius: 12px; }}
+    .emergency-note {{ padding: 13px 15px; margin: 14px 0 18px;
+      color: #ffd9dd; background: linear-gradient(110deg, #35151c, #241722);
+      border: 1px solid #703541; border-left: 4px solid #ff5364;
+      border-radius: 10px; font-size: .92rem; }}
+    form {{ display: grid; gap: 18px; padding: clamp(16px, 4vw, 28px);
+      background: linear-gradient(145deg, #0e2030ed, #091724f2);
+      border: 1px solid #24465b; border-radius: 18px;
+      box-shadow: 0 22px 60px #0005; }}
+    label {{ display: grid; gap: 7px; color: #d3e2ec; font-weight: 650; }}
     input, select, textarea, button {{ font: inherit; }}
-    input, select, textarea {{ width: 100%; padding: 11px; color: #e3edf5;
-      background: #0b1b2a; border: 1px solid #315064; border-radius: 5px; }}
-    textarea {{ min-height: 100px; resize: vertical; }}
-    #report-map {{ height: 420px; border: 1px solid #1b3a4d; border-radius: 8px;
-      box-shadow: 0 0 22px rgba(8, 184, 211, .08); background: #07111d; }}
+    input, select, textarea {{ width: 100%; min-height: 46px; padding: 11px 13px;
+      color: #e3edf5; background: #0a1927; border: 1px solid #315064;
+      border-radius: 10px; transition: border-color .16s ease, box-shadow .16s ease; }}
+    input:focus, select:focus, textarea:focus {{ outline: none;
+      border-color: #35c9dc; box-shadow: 0 0 0 3px #35c9dc22; }}
+    textarea {{ min-height: 110px; resize: vertical; }}
+    #report-map {{ height: 440px; border: 1px solid #315064; border-radius: 13px;
+      box-shadow: 0 10px 30px #0004; background: #07111d; }}
     #report-map .leaflet-tile-pane {{ filter: brightness(.27) saturate(1.9)
       contrast(1.35) hue-rotate(170deg); }}
-    .coordinates {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
-    button {{ min-height: 46px; padding: 10px 14px; color: #06131b;
-      background: #35d2e4; border: 0; border-radius: 5px; font-weight: 750; }}
-    button.secondary {{ color: #d7e4ef; background: #173248; }}
-    button.location-action {{ width: 100%; min-height: 54px; font-size: 1.05rem; }}
-    button:disabled {{ opacity: .55; }}
+    .coordinates {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
+    button {{ min-height: 46px; padding: 10px 16px; color: #06131b;
+      background: linear-gradient(135deg, #68e0ed, #35b8cf); border: 1px solid #55d7e4;
+      border-radius: 10px; font-weight: 750; cursor: pointer;
+      transition: transform .16s ease, box-shadow .16s ease, filter .16s ease; }}
+    button:hover:not(:disabled) {{ transform: translateY(-1px);
+      box-shadow: 0 9px 24px #35c9dc2b; filter: brightness(1.05); }}
+    button.secondary {{ color: #d7e4ef; background: #142b3c;
+      border-color: #315064; }}
+    button.location-action {{ width: 100%; min-height: 56px; font-size: 1rem; }}
+    button:disabled {{ opacity: .55; cursor: not-allowed; }}
     .actions {{ display: flex; flex-wrap: wrap; gap: 10px; }}
     .actions button {{ flex: 1 1 190px; }}
-    #result {{ min-height: 24px; line-height: 1.45; }}
+    #result {{ min-height: 24px; margin: 12px 2px 0; color: #a8bdcc;
+      line-height: 1.5; }}
+    .portal-footnote {{ margin: 14px 2px 0; color: #8199aa; font-size: .8rem; }}
     .honeypot {{ position: absolute; left: -10000px; width: 1px; height: 1px;
       overflow: hidden; }}
     @media (max-width: 520px) {{
-      main {{ padding: 18px 12px 32px; }}
+      main {{ padding: 24px 12px 36px; }}
       .coordinates {{ grid-template-columns: 1fr; }}
-      #report-map {{ height: 320px; }}
+      #report-map {{ height: min(380px, 58vh); }}
+      .portal-brand-mark {{ width: 44px; height: 44px; flex-basis: 44px; }}
+      .actions button {{ flex-basis: 100%; }}
     }}
   </style>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -294,8 +323,15 @@ async def public_report_form():
 </head>
 <body>
   <main>
-    <h1>Report an incident</h1>
-    <p class="intro">Fast, simple incident reporting across Tamil Nadu.</p>
+    <header class="portal-header">
+      <div class="portal-brand-mark" aria-hidden="true">R</div>
+      <div>
+        <p class="portal-kicker">C.R.I.M.E. RADAR · TAMIL NADU</p>
+        <h1>Report an incident</h1>
+      </div>
+    </header>
+    <p class="intro">Share what you saw and help build a clearer picture of
+    reported activity across Tamil Nadu.</p>
     <p class="emergency-note"><strong>Emergency? Call 112.</strong> This form
     does not contact police.</p>
     {setup_notice}
@@ -348,6 +384,8 @@ async def public_report_form():
       <button type="submit" {submit_disabled}>Submit unverified report</button>
     </form>
     <p id="result" role="status" aria-live="polite"></p>
+    <p class="portal-footnote">Reports are stored for operator review. They are
+    unverified and do not dispatch emergency services.</p>
   </main>
   <script>
     const tamilNaduBoundary = {boundary_json};
