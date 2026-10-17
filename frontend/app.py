@@ -15,7 +15,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from branca.element import MacroElement, Template
 from dotenv import load_dotenv
-from folium.plugins import Fullscreen, HeatMap, MarkerCluster
+from folium.plugins import MarkerCluster
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -32,167 +32,23 @@ class TacticalTileStyle(MacroElement):
         <style>.leaflet-container {background:#07111d;}
         .leaflet-fade-anim .leaflet-tile,
         .leaflet-fade-anim .leaflet-popup {transition:none !important;}
-        .leaflet-tile-pane {filter:brightness(.72) contrast(1.18) saturate(.82);}
-        .incident-cluster-icon {align-items:center;background:#123044;
-            border:2px solid #35c9dc;border-radius:50%;box-shadow:0 0 10px #35c9dc66;
+        .incident-cluster-icon {align-items:center;background:#35151c;
+            border:2px solid #ff5364;border-radius:50%;box-shadow:0 0 10px #ff354d66;
             display:flex;height:34px;justify-content:center;width:34px;}
-        .incident-cluster-dot {background:#89a9bd;border:2px solid #fff;
-            border-radius:50%;box-shadow:0 0 8px #89a9bd99;height:12px;width:12px;}
-        .incident-map-marker {background:#8795a1;border:2px solid #fff;
-            border-radius:50%;box-shadow:0 0 8px #8795a199;height:12px;width:12px;}
-        .incident-map-marker.priority-high {background:#ff354d;color:#ff354d;
-            box-shadow:0 0 8px #ff354d99;}
-        .incident-map-marker.priority-medium {background:#ff9f43;color:#ff9f43;
-            box-shadow:0 0 8px #ff9f4399;}
-        .incident-map-marker.priority-low {background:#48d597;color:#48d597;
-            box-shadow:0 0 8px #48d59799;}
-        .incident-map-marker.selected {border:3px solid #fff;
-            box-shadow:0 0 12px currentColor;}
+        .incident-cluster-dot {background:#ff354d;border:2px solid #fff;
+            border-radius:50%;box-shadow:0 0 8px #ff354d99;height:12px;width:12px;}
+        .incident-map-marker {background:#ff354d;border:2px solid #fff;
+            border-radius:50%;box-shadow:0 0 8px #ff354d99;height:12px;width:12px;}
+        .incident-map-marker.selected {background:#ff354d;border:3px solid #fff;
+            box-shadow:0 0 12px #ff354d;}
         .police-station-badge {align-items:center;background:#0756a0;
             border:2px solid #fff;clip-path:polygon(50% 0,95% 15%,88% 65%,
             50% 100%,12% 65%,5% 15%);color:#fff;display:flex;
             filter:drop-shadow(0 0 5px #168bd2);font:700 9px Arial,sans-serif;
             height:30px;justify-content:center;width:28px;}
-        .crime-map-controls {display:flex;gap:6px;padding:0;background:transparent;
-            border:0;box-shadow:none;}
-        .crime-map-controls button {background:rgba(255,255,255,.94);
-            border:1px solid #d4d4d8;border-radius:6px;color:#27272a;
-            cursor:pointer;font:600 12px Arial,sans-serif;padding:8px 11px;
-            box-shadow:0 1px 5px #0003;}
-        .crime-map-controls button:hover {background:#fff;}
-        .crime-map-controls button:focus-visible {outline:2px solid #0ea5e9;
-            outline-offset:2px;}
-        .crime-map-legend {background:rgba(9,21,34,.92);border:1px solid #31586a;
-            border-radius:6px;color:#d7e4ef;font:12px Arial,sans-serif;
-            line-height:1.6;padding:8px 10px;box-shadow:0 1px 6px #0005;}
-        .crime-map-legend-title {color:#a9c4d3;font-weight:700;
-            letter-spacing:.08em;margin-bottom:3px;text-transform:uppercase;}
-        .crime-map-legend-row {align-items:center;display:flex;gap:7px;}
-        .crime-map-legend-dot {background:#ff354d;border:1px solid #fff;
-            border-radius:50%;height:9px;width:9px;}
-        .crime-map-legend-gradient {background:linear-gradient(90deg,#22c55e,
-            #eab308,#f97316,#ef4444);border-radius:5px;height:8px;width:68px;}
-        .crime-map-legend-station {background:#0756a0;border:1px solid #fff;
-            height:10px;width:10px;}
-        .crime-map-legend-patrol {background:#3388ff;border:1px solid #fff;
-            border-radius:50%;height:10px;width:10px;}
         </style>
         {% endmacro %}"""
     )
-
-
-class MapViewControls(MacroElement):
-    _template = Template(
-        """{% macro script(this, kwargs) %}
-        (function () {
-          const map = {{this._parent.get_name()}};
-          const night = {{this.night.get_name()}};
-          const labels = {{this.labels.get_name()}};
-          const street = {{this.street.get_name()}};
-          const center = {{this.center_json}};
-          const zoom = {{this.zoom}};
-          const viewKey = "crime-radar-map-view-v5";
-          const basemapKey = "crime-radar-map-basemap-v4";
-          const savedView = window.parent.sessionStorage.getItem(viewKey);
-          if (savedView) {
-            const view = JSON.parse(savedView);
-            if (view.city === {{this.city_json}}) {
-              map.setView(view.center, view.zoom, {animate: false});
-            }
-          }
-          map.on("moveend", function () {
-            window.parent.sessionStorage.setItem(viewKey, JSON.stringify({
-              city: {{this.city_json}},
-              center: map.getCenter(),
-              zoom: map.getZoom()
-            }));
-          });
-          const control = L.control({position: "topright"});
-          control.onAdd = function () {
-            const container = L.DomUtil.create("div", "crime-map-controls");
-            const basemapButton = L.DomUtil.create("button", "", container);
-            const resetButton = L.DomUtil.create("button", "", container);
-            let useNight =
-              window.parent.sessionStorage.getItem(basemapKey) !== "street";
-            const updateBasemap = function () {
-              if (useNight) {
-                map.addLayer(night);
-                map.addLayer(labels);
-                map.removeLayer(street);
-                basemapButton.textContent = "Street";
-                basemapButton.title = "Switch to street map";
-              } else {
-                map.removeLayer(night);
-                map.removeLayer(labels);
-                map.addLayer(street);
-                basemapButton.textContent = "Night";
-                basemapButton.title = "Switch to night map";
-              }
-            };
-            basemapButton.type = "button";
-            basemapButton.onclick = function () {
-              useNight = !useNight;
-              window.parent.sessionStorage.setItem(
-                basemapKey, useNight ? "night" : "street"
-              );
-              updateBasemap();
-            };
-            resetButton.type = "button";
-            resetButton.textContent = "Reset view";
-            resetButton.title = "Reset map to the selected area";
-            resetButton.onclick = function () {
-              map.setView(center, zoom, {animate: true});
-            };
-            L.DomEvent.disableClickPropagation(container);
-            updateBasemap();
-            return container;
-          };
-          control.addTo(map);
-          const legend = L.control({position: "bottomright"});
-          legend.onAdd = function () {
-            const container = L.DomUtil.create("div", "crime-map-legend");
-            container.innerHTML = {{this.legend_html}};
-            L.DomEvent.disableClickPropagation(container);
-            return container;
-          };
-          legend.addTo(map);
-        })();
-        {% endmacro %}"""
-    )
-
-    def __init__(
-        self, city, center, zoom, night, labels, street, show_heatmap,
-        show_patrol_units, has_stations
-    ):
-        super().__init__()
-        self._name = "MapViewControls"
-        self.city_json = json.dumps(city)
-        self.center_json = json.dumps(center)
-        self.zoom = zoom
-        self.night = night
-        self.labels = labels
-        self.street = street
-        legend_rows = ['<div class="crime-map-legend-title">Map legend</div>']
-        if show_heatmap:
-            legend_rows.append(
-                '<div class="crime-map-legend-row">'
-                '<span class="crime-map-legend-gradient"></span>Crime intensity</div>'
-            )
-        legend_rows.append(
-            '<div class="crime-map-legend-row">'
-            '<span class="crime-map-legend-dot"></span>Incident</div>'
-        )
-        if has_stations:
-            legend_rows.append(
-                '<div class="crime-map-legend-row">'
-                '<span class="crime-map-legend-station"></span>Police station</div>'
-            )
-        if show_patrol_units:
-            legend_rows.append(
-                '<div class="crime-map-legend-row">'
-                '<span class="crime-map-legend-patrol"></span>Patrol unit</div>'
-            )
-        self.legend_html = json.dumps("".join(legend_rows))
 
 
 class IncidentMarkerRegistry(MacroElement):
@@ -226,71 +82,43 @@ class IncidentClusterRegistry(MacroElement):
         self.cluster = cluster
 
 
-class IncidentHeatmapRegistry(MacroElement):
-    _template = Template(
-        """{% macro script(this, kwargs) %}
-        window.crimeRadarIncidentHeatmap = {{this.heatmap.get_name()}};
-        {% endmacro %}"""
-    )
-
-    def __init__(self, heatmap):
-        super().__init__()
-        self._name = "IncidentHeatmapRegistry"
-        self.heatmap = heatmap
-
-
 class MapFocusWatcher(MacroElement):
     _template = Template(
         """{% macro script(this, kwargs) %}
         (function () {
           const map = {{this._parent.get_name()}};
           const city = {{this.city_json}};
-          const heatLayer = {{this.heat_layer.get_name() if this.heat_layer else "null"}};
+          const viewKey = "crime-radar-map-view";
+          const savedView = window.parent.sessionStorage.getItem(viewKey);
+          if (savedView) {
+            const view = JSON.parse(savedView);
+            if (view.city === city) {
+              map.setView(view.center, view.zoom, {animate: false});
+            }
+          }
+          map.on("moveend", function () {
+            window.parent.sessionStorage.setItem(viewKey, JSON.stringify({
+              city: city,
+              center: map.getCenter(),
+              zoom: map.getZoom()
+            }));
+          });
           window.crimeRadarMarkers = window.crimeRadarMarkers || {};
           window.crimeRadarSelectedMarkerId =
             window.crimeRadarSelectedMarkerId || null;
           const incidentCluster = window.crimeRadarIncidentMarkerCluster;
-          const incidentHeatmap = window.crimeRadarIncidentHeatmap;
           const trainingMarkers = {};
           let lastPayload = "";
-          const initialFocus = JSON.parse(
-            window.parent.sessionStorage.getItem("crime-radar-map-focus") || "{}"
-          );
-          let lastFocus =
-            (initialFocus.event_id || "") + "|" + (initialFocus.nonce || "");
-          const incidentIcon = function (markerClass, selected) {
-            const size = selected ? 22 : 18;
-            const anchor = size / 2;
-            return L.divIcon({
-              className: "",
-              html: '<div class="incident-map-marker ' + markerClass +
-                (selected ? ' selected' : '') + '"></div>',
-              iconSize: [size, size],
-              iconAnchor: [anchor, anchor]
-            });
-          };
+          let lastFocus = "";
           const syncMapState = function () {
             const payload =
               window.parent.sessionStorage.getItem("crime-radar-training-cases") || "[]";
             if (payload !== lastPayload) {
               const incoming = JSON.parse(payload);
-              if (heatLayer) {
-                heatLayer.setLatLngs(incoming.map(function (incident) {
-                  const priority = String(incident.priority || "").toUpperCase();
-                  const intensity = priority === "CRITICAL" ? 1 :
-                    priority === "HIGH" ? 0.78 : 0.52;
-                  return [
-                    Number(incident.latitude),
-                    Number(incident.longitude),
-                    intensity
-                  ];
-                }));
-              }
               const activeIds = new Set();
               incoming.forEach(function (incident) {
                 const id = String(incident.event_id);
                 activeIds.add(id);
-                const markerClass = incident.marker_class || "priority-unknown";
                 if (trainingMarkers[id]) {
                   const existingMarker = window.crimeRadarMarkers[id] &&
                     window.crimeRadarMarkers[id].marker;
@@ -298,19 +126,15 @@ class MapFocusWatcher(MacroElement):
                     existingMarker.setPopupContent(incident.popup_html);
                     trainingMarkers[id].popupHtml = incident.popup_html;
                   }
-                  if (existingMarker && trainingMarkers[id].markerClass !== markerClass) {
-                    const selected = window.crimeRadarSelectedMarkerId === id;
-                    const icon = incidentIcon(markerClass, selected);
-                    existingMarker.setIcon(icon);
-                    trainingMarkers[id].markerClass = markerClass;
-                    window.crimeRadarMarkers[id].normalIcon =
-                      incidentIcon(markerClass, false);
-                    window.crimeRadarMarkers[id].markerClass = markerClass;
-                  }
                   return;
                 }
                 const position = [incident.latitude, incident.longitude];
-                const normalIcon = incidentIcon(markerClass, false);
+                const normalIcon = L.divIcon({
+                  className: "",
+                  html: '<div class="incident-map-marker"></div>',
+                  iconSize: [18, 18],
+                  iconAnchor: [9, 9]
+                });
                 const marker = L.marker(position, {
                   icon: normalIcon,
                   title: incident.incident_type
@@ -318,13 +142,11 @@ class MapFocusWatcher(MacroElement):
                 incidentCluster.addLayer(marker);
                 trainingMarkers[id] = {
                   marker: marker,
-                  popupHtml: incident.popup_html,
-                  markerClass: markerClass
+                  popupHtml: incident.popup_html
                 };
                 window.crimeRadarMarkers[id] = {
                   marker: marker,
-                  normalIcon: normalIcon,
-                  markerClass: markerClass
+                  normalIcon: normalIcon
                 };
               });
               Object.keys(trainingMarkers).forEach(function (id) {
@@ -333,13 +155,6 @@ class MapFocusWatcher(MacroElement):
                 delete trainingMarkers[id];
                 delete window.crimeRadarMarkers[id];
               });
-              if (incidentHeatmap) {
-                incidentHeatmap.setLatLngs(incoming
-                .filter(function (incident) { return !incident.is_demo; })
-                .map(function (incident) {
-                  return [incident.latitude, incident.longitude];
-                }));
-              }
               lastPayload = payload;
             }
             const focusState = JSON.parse(
@@ -347,7 +162,6 @@ class MapFocusWatcher(MacroElement):
             );
             const focus = focusState.event_id || "";
             const focusToken = focus + "|" + (focusState.nonce || "");
-            if (!focusState.requested) return;
             if (!focus || focusToken === lastFocus) return;
             const entry = window.crimeRadarMarkers &&
               window.crimeRadarMarkers[focus];
@@ -358,17 +172,14 @@ class MapFocusWatcher(MacroElement):
                 previouslySelected.marker.setIcon(previouslySelected.normalIcon);
               }
               const marker = entry.marker;
-              marker.setIcon(incidentIcon(entry.markerClass || "priority-unknown", true));
+              marker.setIcon(L.divIcon({
+                className: "",
+                html: '<div class="incident-map-marker selected"></div>',
+                iconSize: [22, 22],
+                iconAnchor: [11, 11]
+              }));
               window.crimeRadarSelectedMarkerId = focus;
               lastFocus = focusToken;
-              window.parent.sessionStorage.setItem(
-                "crime-radar-map-focus",
-                JSON.stringify({
-                  event_id: focus,
-                  nonce: focusState.nonce,
-                  requested: false
-                })
-              );
               map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 16), {
                 animate: true,
                 duration: 1.1,
@@ -387,11 +198,10 @@ class MapFocusWatcher(MacroElement):
         {% endmacro %}"""
     )
 
-    def __init__(self, city, heat_layer=None):
+    def __init__(self, city):
         super().__init__()
         self._name = "MapFocusWatcher"
         self.city_json = json.dumps(city)
-        self.heat_layer = heat_layer
 
 
 st.set_page_config(
@@ -457,7 +267,6 @@ def nearest_training_stations(
 def focus_incident_on_map(event_id):
     st.session_state["map_focus_event_id"] = str(event_id)
     st.session_state["map_focus_nonce"] = str(time.time_ns())
-    st.session_state["map_focus_requested"] = True
 
 
 def record_incident_station_alert(
@@ -524,17 +333,6 @@ def display_incident_status(status):
     return "OPEN" if is_training_status(status) else str(status)
 
 
-def incident_marker_class(priority):
-    normalized_priority = str(priority or "").strip().upper()
-    if normalized_priority in {"HIGH", "CRITICAL"}:
-        return "priority-high"
-    if normalized_priority == "MEDIUM":
-        return "priority-medium"
-    if normalized_priority == "LOW":
-        return "priority-low"
-    return "priority-unknown"
-
-
 def display_incident_type(incident_type, is_training):
     value = str(incident_type)
     if is_training and value.strip().upper() == "SIMULATED DEMO EVENT":
@@ -567,16 +365,10 @@ def display_incident_time(value):
     return local_time.strftime("%d %b %Y, %I:%M %p IST")
 
 
-def training_map_sync_html(
-    training_cases, focus_event_id=None, focus_nonce=None, focus_requested=False
-):
+def training_map_sync_html(training_cases, focus_event_id=None, focus_nonce=None):
     payload = json.dumps(training_cases, separators=(",", ":"), ensure_ascii=True)
     focus_payload = json.dumps(
-        {
-            "event_id": focus_event_id,
-            "nonce": focus_nonce,
-            "requested": focus_requested,
-        },
+        {"event_id": focus_event_id, "nonce": focus_nonce},
         separators=(",", ":"),
         ensure_ascii=True,
     )
@@ -619,18 +411,40 @@ async def load_dashboard_data():
     return incidents, units, sources[0], stations
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def load_crime_trends(days, include_demo):
+    return get_json(
+        "/api/v1/analytics/trends",
+        params={"days": days, "include_demo": include_demo},
+    )
+
+
 st.markdown(
     """
     <style>
     :root { color-scheme: dark; }
-    .stApp { background: #07111d; color: #d7e4ef; }
+    .stApp {
+        background:
+            radial-gradient(ellipse at 12% 0%, rgba(22, 104, 139, .15), transparent 38%),
+            radial-gradient(ellipse at 92% 16%, rgba(95, 65, 153, .12), transparent 34%),
+            #07111d;
+        color: #d7e4ef;
+    }
     [data-testid="stMainBlockContainer"] { padding: .7rem 1rem 1rem; max-width: 100%; }
     [data-testid="stHeader"] { background: rgba(7, 17, 29, .94); }
     [data-testid="stStatusWidget"] { visibility: hidden; }
     [data-testid="stSidebar"] { background: #091522; border-right: 1px solid #193348; }
     [data-testid="stVerticalBlock"] { gap: .55rem; }
-    [data-testid="stMetric"] { background: #0b1b2a; border: 1px solid #1b3a4d;
-        border-radius: 8px; padding: 12px 14px; }
+    [data-testid="stMetric"] {
+        background: linear-gradient(145deg, rgba(15, 38, 56, .98), rgba(10, 25, 39, .98));
+        border: 1px solid #24465b; border-top: 2px solid #2ab9ce;
+        border-radius: 10px; padding: 12px 14px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, .14);
+        transition: border-color .18s ease, transform .18s ease;
+    }
+    [data-testid="stMetric"]:hover { border-color: #3a758d; transform: translateY(-1px); }
+    [data-testid="stMetricLabel"] { color: #95b3c7; }
+    [data-testid="stMetricValue"] { color: #f0f7fc; }
     .radar-kicker { color: #6e91a8; font-size: .75rem; letter-spacing: .16em;
         font-weight: 700; text-transform: uppercase; }
     .radar-title { color: #e3edf5; font-size: 1.4rem; font-weight: 750;
@@ -644,8 +458,9 @@ st.markdown(
     .radar-no-feed { color: #ffc56c; font-size: .75rem; font-weight: 700;
         text-align: right; border: 1px solid #594729; background: #241e15;
         border-radius: 5px; padding: 6px 9px; }
-    .radar-panel { background: #0a1927; border: 1px solid #1b3a4d;
-        border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+    .radar-panel { background: linear-gradient(145deg, #0d2030, #091724);
+        border: 1px solid #24465b; border-radius: 10px; padding: 14px;
+        margin-bottom: 12px; box-shadow: 0 10px 26px rgba(0, 0, 0, .12); }
     .radar-panel h3 { color: #aec6d6; font-size: .9rem; letter-spacing: .06em;
         text-transform: uppercase; margin: 0 0 10px; }
     .radar-alert { background: #35151c; color: #ff8991; border: 1px solid #852b36;
@@ -655,6 +470,37 @@ st.markdown(
     .radar-zone-critical { border-left-color: #ff4559; }
     .radar-zone small { color: #86a4b8; }
     .radar-status { color: #62d6a5; font-size: .8rem; font-weight: 700; }
+    .radar-analytics-heading { color: #dcebf4; font-size: 1rem;
+        font-weight: 750; letter-spacing: .06em; margin: 0; }
+    .radar-analytics-subtitle { color: #86a4b8; font-size: .78rem;
+        margin: .2rem 0 .8rem; }
+    .radar-spike-grid { display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 10px; margin: 10px 0 14px; }
+    .radar-spike-card { background: linear-gradient(140deg, #261d27, #171b29);
+        border: 1px solid #73505a; border-left: 4px solid #ff7180;
+        border-radius: 9px; padding: 12px 14px; }
+    .radar-spike-card.elevated { background: linear-gradient(140deg, #2c261b, #191d25);
+        border-color: #6c5b37; border-left-color: #ffc46b; }
+    .radar-spike-top { display: flex; justify-content: space-between;
+        gap: 10px; align-items: center; }
+    .radar-spike-severity { color: #ff9ba4; font-size: .68rem;
+        font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .radar-spike-card.elevated .radar-spike-severity { color: #ffd18a; }
+    .radar-spike-date { color: #eaf2f8; font-size: .88rem; font-weight: 700; }
+    .radar-spike-count { color: #fff; font-size: 1.45rem; font-weight: 800;
+        margin: 7px 0 2px; }
+    .radar-spike-detail { color: #a8bdcc; font-size: .74rem; }
+    .radar-no-spikes { background: linear-gradient(120deg, #102c2d, #10232e);
+        border: 1px solid #28645c; border-left: 4px solid #48d6a0;
+        border-radius: 9px; color: #a5e7ce; padding: 12px 14px; margin: 10px 0 14px; }
+    .radar-spike-banner { background: linear-gradient(105deg, #351b24, #1b1c2a);
+        border: 1px solid #77414b; border-left: 4px solid #ff7180;
+        border-radius: 9px; color: #f6dce0; padding: 10px 14px;
+        margin: 0 0 12px; }
+    .radar-spike-banner.clear { background: linear-gradient(105deg, #102c2d, #10232e);
+        border-color: #28645c; border-left-color: #48d6a0; color: #b9ead9; }
+    .radar-spike-banner strong { color: #fff; }
     div[data-testid="stDataFrame"] { border: 1px solid #1b3a4d; border-radius: 8px; }
     div[data-testid="stMultiSelect"] [data-baseweb="tag"] {
         background: linear-gradient(135deg, #124458, #126878);
@@ -676,7 +522,7 @@ st.markdown(
         from { opacity: .45; transform: scale(.92); }
         to { opacity: 1; transform: scale(1); }
     }
-    iframe[title="st.iframe"][height="650"] {
+    iframe[title="st.iframe"][height="700"] {
         opacity: 1 !important;
         filter: none !important;
         transition: none !important;
@@ -684,11 +530,11 @@ st.markdown(
         border-radius: 8px;
         box-shadow: 0 0 22px rgba(8, 184, 211, .08);
     }
-    div[data-testid="element-container"]:has(> iframe[title="st.iframe"][height="650"]) {
+    div[data-testid="element-container"]:has(> iframe[title="st.iframe"][height="700"]) {
         opacity: 1 !important;
         transition: none !important;
     }
-    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
+    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="700"])
         > div[data-testid="column"]:first-child {
         position: fixed !important;
         left: -336px;
@@ -710,11 +556,11 @@ st.markdown(
         box-shadow: 8px 0 24px rgba(0, 0, 0, .38);
         transition: left .24s cubic-bezier(.2, .8, .2, 1);
     }
-    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
+    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="700"])
         > div[data-testid="column"]:first-child:hover {
         left: 0;
     }
-    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
+    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="700"])
         > div[data-testid="column"]:first-child::after {
         content: "FILTERS";
         position: absolute;
@@ -732,68 +578,12 @@ st.markdown(
         writing-mode: vertical-rl;
         pointer-events: auto;
     }
-    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
-        > div[data-testid="column"]:nth-child(2) {
-        flex: 1 1 100% !important;
-        width: 100% !important;
-        max-width: 100% !important;
-    }
-    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
-        > div[data-testid="column"]:last-child {
-        position: fixed !important;
-        right: -336px;
-        top: 72px;
-        bottom: 16px;
-        height: calc(100vh - 88px);
-        width: min(360px, 88vw) !important;
-        z-index: 10000;
-        overflow-y: auto;
-        overscroll-behavior-y: contain;
-        scrollbar-width: thin;
-        scrollbar-color: #31586a #091522;
-        -webkit-overflow-scrolling: touch;
-        padding: 12px;
-        background: #091522;
-        border: 1px solid #1b3a4d;
-        border-right: 0;
-        border-radius: 10px 0 0 10px;
-        box-shadow: -8px 0 24px rgba(0, 0, 0, .38);
-        transition: right .24s cubic-bezier(.2, .8, .2, 1);
-    }
-    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
-        > div[data-testid="column"]:last-child:hover {
-        right: 0;
-    }
-    div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
-        > div[data-testid="column"]:last-child::before {
-        content: "ALERTS";
-        position: absolute;
-        left: -25px;
-        top: 50%;
-        padding: 10px 5px;
-        color: #b7eaf1;
-        background: #123044;
-        border: 1px solid #1b3a4d;
-        border-right: 0;
-        border-radius: 6px 0 0 6px;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: .08em;
-        writing-mode: vertical-rl;
-        pointer-events: auto;
-    }
     @media (max-width: 700px) {
-        div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
+        div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="700"])
             > div[data-testid="column"]:first-child {
             width: min(340px, 92vw) !important;
             height: calc(100vh - 88px);
             left: calc(-min(340px, 92vw) + 24px);
-        }
-        div[data-testid="stHorizontalBlock"]:has(iframe[title="st.iframe"][height="650"])
-            > div[data-testid="column"]:last-child {
-            width: min(340px, 92vw) !important;
-            height: calc(100vh - 88px);
-            right: calc(-min(340px, 92vw) + 24px);
         }
     }
     </style>
@@ -993,7 +783,32 @@ def render_live_dashboard():
     if data_error:
         st.error(f"Telemetry service unavailable: {data_error}")
     else:
-        left_panel, map_panel, right_panel = st.columns([0.7, 4.8, 1.2], gap="small")
+        try:
+            recent_trends = load_crime_trends(7, False)
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            st.warning(f"Recent spike monitor unavailable: {exc}")
+        else:
+            recent_spikes = recent_trends.get("spike_days", [])
+            if recent_spikes:
+                latest_spike = max(recent_spikes, key=lambda spike: spike["date"])
+                spike_date = pd.to_datetime(latest_spike["date"]).strftime("%d %b %Y")
+                severity = "High" if latest_spike["severity"] == "high" else "Elevated"
+                st.markdown(
+                    '<div class="radar-spike-banner"><strong>UNUSUAL ACTIVITY · '
+                    f'{severity}</strong> — {latest_spike["count"]} reports on '
+                    f'{spike_date}, above the preceding 7-day baseline. '
+                    'Review the trend panel; reports are unverified.</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<div class="radar-spike-banner clear"><strong>7-DAY ACTIVITY '
+                    'MONITOR</strong> — No sudden reporting spikes detected. '
+                    'Reports are unverified.</div>',
+                    unsafe_allow_html=True,
+                )
+
+        left_panel, map_panel, right_panel = st.columns([1.3, 3.4, 1.3], gap="small")
         with left_panel:
             st.markdown('<div class="radar-panel"><h3>Predictive Analytics</h3></div>', unsafe_allow_html=True)
             show_demo_data = st.toggle(
@@ -1403,9 +1218,6 @@ def render_live_dashboard():
             selected_priority = st.selectbox("Priority", ["All priorities", *priorities])
             selected_status = st.selectbox("Status", ["All statuses", *incident_statuses])
             show_patrol_units = st.checkbox("Show patrol telemetry", value=True)
-            show_crime_heatmap = st.checkbox(
-                "Show crime heatmap", value=True, key="crime-heatmap"
-            )
 
         filtered_df = df.copy()
         if selected_type != "All types":
@@ -1485,14 +1297,15 @@ def render_live_dashboard():
             )
             report_details = str(incident.get("report_details") or "").strip()
             report_context = (
-                "<br><b>SIMULATED TRAINING INCIDENT · NOT A VERIFIED CRIME</b>"
-                if is_demo
-                else "<br><b>UNVERIFIED USER REPORT</b>"
+                "<br><b>UNVERIFIED USER REPORT</b>"
+                + (
+                    f"<br><b>Details:</b> {html.escape(report_details)}"
+                    if report_details
+                    else ""
+                )
                 if is_report
                 else ""
             )
-            if is_report and report_details:
-                report_context += f"<br><b>Details:</b> {html.escape(report_details)}"
             dispatch = dispatch_by_incident.get(event_id)
             dispatch_detail = ""
             if dispatch and dispatch["station"] is not None:
@@ -1524,18 +1337,16 @@ def render_live_dashboard():
                     "latitude": float(incident["latitude"]),
                     "longitude": float(incident["longitude"]),
                     "priority": str(incident["priority"]).upper(),
-                    "marker_class": incident_marker_class(incident.get("priority")),
                     "is_demo": is_demo,
                     "popup_html": (
                         f"{'<b>ACTIVE INCIDENT</b><br>' if event_id == active_action_incident_id else ''}"
-                        f"<b>Crime type:</b> {incident_type}<br>"
-                        f"<b>Location:</b> {incident_address}<br>"
-                        f"<b>Date:</b> "
+                        f"<b>{incident_type}</b><br>"
+                        f"<b>Area:</b> {incident_address}<br>"
+                        f"<b>Reported:</b> "
                         f"{html.escape(display_incident_time(incident['timestamp']))}<br>"
                         f"<b>Incident ID:</b> "
                         f"{html.escape(display_event_id(event_id, is_demo))}<br>"
-                        f"<b>Priority:</b> {html.escape(str(incident['priority']))}<br>"
-                        f"<b>Report status:</b> "
+                        f"{html.escape(str(incident['priority']))} · "
                         f"{html.escape(display_incident_status(incident['status']))}"
                         f"{report_context}"
                         f"{dispatch_detail}"
@@ -1559,22 +1370,13 @@ def render_live_dashboard():
                     f'critical event{"s" if demo_critical_count != 1 else ""}</div>',
                     unsafe_allow_html=True,
                 )
-            st.markdown(
-                '<div class="radar-panel"><h3>Map Legend</h3><small>'
-                '<span style="color:#ff354d">●</span> High / critical priority<br>'
-                '<span style="color:#ff9f43">●</span> Medium priority<br>'
-                '<span style="color:#48d597">●</span> Low priority<br>'
-                '<span style="color:#8795a1">●</span> Unclassified priority<br>'
-                '<span style="color:#35c9dc">●</span> Incident cluster<br>'
-                'Heatmap · concentration of non-simulated reports; user reports are unverified<br>'
-                'White outline · Tamil Nadu jurisdiction<br>'
-                'Blue PD badge · police station<br>'
-                'Cyan line · received patrol telemetry only<br>'
-                'Blue marker · received patrol asset</small></div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<div class="radar-panel"><h3>Map Legend</h3><small>State outline · Tamil Nadu jurisdiction<br>'
+                        'Red dot / cluster · incidents<br>'
+                        'Blue PD badge · police station<br>'
+                        'Cyan line · received patrol telemetry only<br>'
+                        'Blue marker · received patrol asset</small></div>', unsafe_allow_html=True)
         with map_panel:
-            toolbar_city, toolbar_scope = st.columns([3, 1])
+            toolbar_city, toolbar_scope = st.columns([2, 1])
             with toolbar_city:
                 city_centers = {
                     "Tamil Nadu": [10.8, 78.2],
@@ -1648,7 +1450,7 @@ def render_live_dashboard():
             east = max(point[0] for point in boundary_coordinates)
             radar_map = folium.Map(
                 location=city_centers[map_city],
-                zoom_start=7 if map_city == "Tamil Nadu" else 13,
+                zoom_start=6 if map_city == "Tamil Nadu" else 13,
                 min_zoom=6,
                 tiles=None,
                 control_scale=True,
@@ -1658,67 +1460,28 @@ def render_live_dashboard():
                 min_lon=floor(west - 0.2),
                 max_lon=ceil(east + 0.2),
             )
-            night_layer = folium.TileLayer(
+            folium.TileLayer(
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/"
                 "Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
                 attr="Tiles © Esri — Sources: Esri, HERE, Garmin, USGS, "
                 "OpenStreetMap contributors, and the GIS User Community",
-                name="Night",
+                name="Dark map",
                 max_zoom=16,
                 max_native_zoom=16,
                 show=True,
             ).add_to(radar_map)
-            night_labels = folium.TileLayer(
+            folium.TileLayer(
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/"
                 "Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
                 attr="Labels © Esri",
-                name="Night map labels",
+                name="Dark map labels",
                 max_zoom=16,
                 max_native_zoom=16,
                 overlay=True,
                 control=False,
                 show=True,
             ).add_to(radar_map)
-            street_layer = folium.TileLayer(
-                tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                attr="© OpenStreetMap contributors",
-                name="Street",
-                max_zoom=18,
-                max_native_zoom=18,
-                show=False,
-            ).add_to(radar_map)
             TacticalTileStyle().add_to(radar_map.get_root())
-            incident_heatmap = HeatMap(
-                data=[],
-                name="Incident concentration",
-                radius=28,
-                blur=22,
-                min_opacity=0.25,
-                gradient={
-                    "0.2": "#35c9dc",
-                    "0.5": "#ffc247",
-                    "0.8": "#ff9f43",
-                    "1.0": "#ff354d",
-                },
-            ).add_to(radar_map)
-            IncidentHeatmapRegistry(incident_heatmap).add_to(radar_map.get_root())
-            MapViewControls(
-                map_city,
-                city_centers[map_city],
-                7 if map_city == "Tamil Nadu" else 13,
-                night_layer,
-                night_labels,
-                street_layer,
-                show_crime_heatmap,
-                show_patrol_units,
-                bool(police_stations),
-            ).add_to(radar_map)
-            Fullscreen(
-                position="topright",
-                title="Open fullscreen",
-                title_cancel="Exit fullscreen",
-                force_separate_button=True,
-            ).add_to(radar_map)
             outside_mask = {
                 "type": "Feature",
                 "properties": {"name": "Outside Tamil Nadu"},
@@ -1754,10 +1517,10 @@ def render_live_dashboard():
                 TAMIL_NADU_FEATURE,
                 name="Tamil Nadu boundary",
                 style_function=lambda _: {
-                    "color": "#42eaff",
-                    "weight": 3.5,
+                    "color": "#35e0ff",
+                    "weight": 2.5,
                     "fillColor": "#063d4c",
-                    "fillOpacity": 0.08,
+                    "fillOpacity": 0.16,
                 },
             ).add_to(radar_map)
             station_reference_id = (
@@ -1876,22 +1639,6 @@ def render_live_dashboard():
                     "animateAddingMarkers": False,
                 },
             ).add_to(radar_map)
-            heat_layer = None
-            if show_crime_heatmap:
-                heat_layer = HeatMap(
-                    [],
-                    name="Crime intensity",
-                    radius=28,
-                    blur=22,
-                    max_zoom=13,
-                    min_opacity=0.35,
-                    gradient={
-                        "0.2": "#22c55e",
-                        "0.45": "#eab308",
-                        "0.7": "#f97316",
-                        "1": "#ef4444",
-                    },
-                ).add_to(radar_map)
             IncidentClusterRegistry(incident_cluster).add_to(radar_map)
             if not render_map_df.empty:
                 for _, incident in render_map_df.iterrows():
@@ -1907,16 +1654,15 @@ def render_live_dashboard():
                     incident_id = str(incident["event_id"])
                     report_details = str(incident.get("report_details") or "").strip()
                     report_context = (
-                        "<br><b>SIMULATED TRAINING INCIDENT · NOT A VERIFIED CRIME</b>"
-                        if is_demo
-                        else "<br><b>UNVERIFIED USER REPORT</b>"
+                        "<br><b>UNVERIFIED USER REPORT</b>"
+                        + (
+                            f"<br><b>Details:</b> {html.escape(report_details)}"
+                            if is_report and report_details
+                            else ""
+                        )
                         if is_report
                         else ""
                     )
-                    if is_report and report_details:
-                        report_context += (
-                            f"<br><b>Details:</b> {html.escape(report_details)}"
-                        )
                     dispatch = dispatch_by_incident.get(incident_id)
                     dispatch_detail = ""
                     if dispatch and dispatch["station"] is not None:
@@ -1944,10 +1690,9 @@ def render_live_dashboard():
                     is_selected = str(
                         st.session_state.get("map_focus_event_id", "")
                     ) == incident_id
-                    marker_classes = [
-                        "incident-map-marker",
-                        incident_marker_class(incident.get("priority")),
-                    ]
+                    marker_classes = ["incident-map-marker"]
+                    if is_critical:
+                        marker_classes.append("critical")
                     if is_selected:
                         marker_classes.append("selected")
                     marker_size = 22 if is_selected else 18
@@ -1965,14 +1710,13 @@ def render_live_dashboard():
                             incident_name
                         ),
                         popup=folium.Popup(
-                            f"<b>Crime type:</b> {incident_name}<br>"
-                            f"<b>Location:</b> {incident_address}<br>"
-                            f"<b>Date:</b> "
+                            f"<b>{incident_name}</b><br>"
+                            f"<b>Area:</b> {incident_address}<br>"
+                            f"<b>Reported:</b> "
                             f"{html.escape(display_incident_time(incident['timestamp']))}<br>"
                             f"<b>Incident ID:</b> "
                             f"{html.escape(display_event_id(incident_id, is_demo))}<br>"
-                            f"<b>Priority:</b> {html.escape(str(incident['priority']))}<br>"
-                            f"<b>Report status:</b> "
+                            f"{html.escape(str(incident['priority']))} · "
                             f"{html.escape(display_incident_status(incident['status']))}"
                             f"{report_context}"
                             f"{dispatch_detail}",
@@ -2086,27 +1830,23 @@ def render_live_dashboard():
                 st.caption(f"Displaying {len(displayed_units)} patrol marker(s).")
             elif show_patrol_units:
                 st.caption("No recent patrol telemetry received.")
-            folium.LayerControl(position="topright", collapsed=True).add_to(radar_map)
-            focus_sync_html = training_map_sync_html(
-                training_map_payload,
-                st.session_state.get("map_focus_event_id"),
-                st.session_state.get("map_focus_nonce"),
-                bool(st.session_state.pop("map_focus_requested", False)),
-            )
             components.html(
-                focus_sync_html,
+                training_map_sync_html(
+                    training_map_payload,
+                    st.session_state.get("map_focus_event_id"),
+                    st.session_state.get("map_focus_nonce"),
+                ),
                 height=0,
                 scrolling=False,
             )
-            MapFocusWatcher(map_city, heat_layer).add_to(radar_map)
+            MapFocusWatcher(map_city).add_to(radar_map)
 
             map_signature = json.dumps(
                 {
-                    "map_mode": "priority-heatmap-v21",
+                    "map_mode": "incremental-training-v19",
                     "city": map_city,
                     "show_training": show_demo_data,
                     "show_patrol_units": show_patrol_units,
-                    "show_crime_heatmap": show_crime_heatmap,
                 },
                 sort_keys=True,
                 default=str,
@@ -2116,7 +1856,7 @@ def render_live_dashboard():
                 st.session_state["tactical_map_html"] = radar_map.get_root().render()
             components.html(
                 st.session_state["tactical_map_html"],
-                height=650,
+                height=700,
                 scrolling=False,
             )
             st.caption(
@@ -2311,5 +2051,176 @@ def render_live_dashboard():
                                     previous_distance,
                                 ),
                             )
+
+        with st.expander("Crime trend analytics", expanded=False):
+            st.markdown(
+                '<p class="radar-analytics-heading">INCIDENT INTELLIGENCE</p>'
+                '<p class="radar-analytics-subtitle">Volume, categories and unusual '
+                'day-over-day activity across the selected reporting window.</p>',
+                unsafe_allow_html=True,
+            )
+            period_days = st.selectbox(
+                "Trend period",
+                options=[7, 30, 90, 180],
+                format_func=lambda days: f"Last {days} days vs previous {days} days",
+                index=1,
+                key="crime-trend-period",
+            )
+            include_demo_trends = st.checkbox(
+                "Include simulated/demo records",
+                value=False,
+                help="Demo and training records are excluded unless explicitly enabled.",
+                key="crime-trend-include-demo",
+            )
+            try:
+                trends = load_crime_trends(period_days, include_demo_trends)
+            except (requests.RequestException, ValueError, KeyError) as exc:
+                st.error(f"Crime trend analytics unavailable: {exc}")
+                return
+
+            change = trends["change_percent"]
+            change_label = (
+                f"{change:+.1f}% vs previous period"
+                if change is not None
+                else "No previous-period reports"
+            )
+            current_column, previous_column, change_column, average_column = st.columns(4)
+            current_column.metric(
+                "Reports · current period",
+                trends["current_count"],
+                delta=change_label,
+                delta_color="inverse" if change is not None else "off",
+            )
+            previous_column.metric(
+                "Reports · previous period",
+                trends["previous_count"],
+            )
+            change_column.metric(
+                "Period-over-period change",
+                f"{change:+.1f}%" if change is not None else "NEW",
+                delta_color="inverse",
+            )
+            average_column.metric(
+                "Average reports per day",
+                f"{trends['average_per_day']:.2f}",
+            )
+
+            st.caption(
+                f"Current: {trends['current_start']} to {trends['current_end']} · "
+                f"Previous: {trends['comparison_start']} to "
+                f"{trends['comparison_end']} (UTC)"
+            )
+            st.info(
+                "This prototype has no verified live agency feed. Trends summarize "
+                "stored reports, including unverified public reports; they are "
+                "descriptive and are not a forecast of crime."
+            )
+            if include_demo_trends:
+                st.warning(
+                    "Simulated/demo records are included in these charts and "
+                    "should not be interpreted as real events."
+                )
+
+            st.markdown("#### Sudden spike detection")
+            st.caption(
+                "A day is flagged when it has at least 3 reports and is at least "
+                "2× and 3 reports above its preceding 7-day daily average. "
+                "High indicates at least 5 reports and a 3× / 5-report increase. "
+                "These are statistical review cues, not predictions or verified events."
+            )
+            spike_days = trends.get("spike_days", [])
+            if spike_days:
+                spike_cards = []
+                for spike in spike_days:
+                    severity = spike["severity"]
+                    severity_class = "elevated" if severity == "elevated" else ""
+                    severity_label = "Elevated" if severity == "elevated" else "High"
+                    spike_date = pd.to_datetime(spike["date"]).strftime("%d %b %Y")
+                    spike_cards.append(
+                        f'<div class="radar-spike-card {severity_class}">'
+                        '<div class="radar-spike-top">'
+                        f'<span class="radar-spike-date">{spike_date}</span>'
+                        f'<span class="radar-spike-severity">{severity_label}</span>'
+                        '</div>'
+                        f'<div class="radar-spike-count">{spike["count"]} reports</div>'
+                        f'<div class="radar-spike-detail">7-day baseline: '
+                        f'{spike["baseline_average"]:.2f} reports/day · '
+                        f'{spike["baseline_count"]} reports total</div></div>'
+                    )
+                st.markdown(
+                    '<div class="radar-spike-grid">'
+                    + "".join(spike_cards)
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<div class="radar-no-spikes"><strong>No sudden spikes '
+                    'detected</strong> · Daily counts remained below the configured '
+                    'review thresholds for this period.</div>',
+                    unsafe_allow_html=True,
+                )
+
+            trend_chart_column, type_chart_column = st.columns(
+                [1.35, 1], gap="medium"
+            )
+            with trend_chart_column:
+                st.markdown("#### Daily reported incidents")
+                daily_df = pd.DataFrame(trends["daily_counts"])
+                daily_df["date"] = pd.to_datetime(daily_df["date"])
+                daily_df = daily_df.set_index("date")
+                daily_df["7-day average"] = daily_df["count"].rolling(
+                    window=7, min_periods=1
+                ).mean()
+                daily_df = daily_df.rename(columns={"count": "Reports"})
+                st.line_chart(
+                    daily_df,
+                    color=["#35c9dc", "#aa91ff"],
+                    use_container_width=True,
+                )
+                busiest_day = trends["busiest_day"]
+                if busiest_day and busiest_day["count"]:
+                    st.caption(
+                        f"Peak day in selected period: {busiest_day['date']} · "
+                        f"{busiest_day['count']} report(s)"
+                    )
+                else:
+                    st.caption("No reports were recorded in the selected period.")
+
+            with type_chart_column:
+                st.markdown("#### Incident-type trend")
+                if trends["incident_types"]:
+                    type_df = pd.DataFrame(trends["incident_types"]).head(10)
+                    type_df = type_df.set_index("incident_type")[
+                        ["current_count", "previous_count"]
+                    ].rename(
+                        columns={
+                            "current_count": "Current",
+                            "previous_count": "Previous",
+                        }
+                    )
+                    st.bar_chart(
+                        type_df,
+                        horizontal=True,
+                        color=["#35c9dc", "#758cff"],
+                    )
+                else:
+                    st.caption("No incident types in the selected periods.")
+
+            if trends["priorities"]:
+                st.markdown("#### Priority distribution")
+                priority_df = pd.DataFrame(trends["priorities"]).set_index(
+                    "priority"
+                )[["current_count", "previous_count"]].rename(
+                    columns={
+                        "current_count": "Current",
+                        "previous_count": "Previous",
+                    }
+                )
+                st.bar_chart(
+                    priority_df,
+                    horizontal=True,
+                    color=["#35c9dc", "#758cff"],
+                )
 
 render_live_dashboard()

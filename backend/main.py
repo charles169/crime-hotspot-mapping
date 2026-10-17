@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from math import ceil
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -170,6 +171,138 @@ async def get_active_incidents(db: AsyncSession = Depends(get_db)):
         for incident in result.all()
         if is_in_tamil_nadu(incident.latitude, incident.longitude)
     ]
+
+
+@app.get("/api/v1/analytics/trends")
+async def get_crime_trends(
+    days: int = Query(default=30, ge=7, le=365),
+    include_demo: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+):
+    now = datetime.utcnow()
+    today = now.date()
+    current_start = datetime.combine(today - timedelta(days=days - 1), datetime.min.time())
+    comparison_start = current_start - timedelta(days=days)
+    result = await db.scalars(
+        select(CrimeIncident)
+        .where(CrimeIncident.timestamp >= comparison_start)
+        .where(CrimeIncident.timestamp < datetime.combine(today + timedelta(days=1), datetime.min.time()))
+        .where(
+            or_(
+                CrimeIncident.display_after.is_(None),
+                CrimeIncident.display_after <= now,
+            )
+        )
+        .order_by(CrimeIncident.timestamp)
+    )
+
+    daily_counts = {}
+    type_counts = {}
+    priority_counts = {}
+    current_count = 0
+    previous_count = 0
+    for incident in result:
+        status = (incident.status or "").strip().upper()
+        if not include_demo and status.startswith(
+            ("SIMULATED DEMO", "TRAINING EXERCISE")
+        ):
+            continue
+        if not is_in_tamil_nadu(incident.latitude, incident.longitude):
+            continue
+
+        is_current = incident.timestamp >= current_start
+        period = "current" if is_current else "previous"
+        current_count += int(is_current)
+        previous_count += int(not is_current)
+        incident_date = incident.timestamp.date().isoformat()
+        daily_counts[incident_date] = daily_counts.get(incident_date, 0) + 1
+
+        incident_type = (incident.incident_type or "Unspecified").strip()
+        type_counts.setdefault(
+            incident_type, {"incident_type": incident_type, "current_count": 0, "previous_count": 0}
+        )[f"{period}_count"] += 1
+
+        priority = (incident.priority or "Unspecified").strip()
+        priority_counts.setdefault(
+            priority, {"priority": priority, "current_count": 0, "previous_count": 0}
+        )[f"{period}_count"] += 1
+
+    type_rows = sorted(
+        type_counts.values(),
+        key=lambda item: (-item["current_count"], item["incident_type"].casefold()),
+    )
+    priority_rows = sorted(
+        priority_counts.values(),
+        key=lambda item: (-item["current_count"], item["priority"].casefold()),
+    )
+    current_days = [
+        {
+            "date": (today - timedelta(days=offset)).isoformat(),
+            "count": daily_counts.get(
+                (today - timedelta(days=offset)).isoformat(), 0
+            ),
+        }
+        for offset in range(days - 1, -1, -1)
+    ]
+    spike_days = []
+    for day in current_days:
+        incident_day = datetime.fromisoformat(day["date"]).date()
+        baseline_days = [
+            daily_counts.get((incident_day - timedelta(days=offset)).isoformat(), 0)
+            for offset in range(1, 8)
+        ]
+        baseline_average = sum(baseline_days) / len(baseline_days)
+        spike_threshold = max(
+            3,
+            ceil(baseline_average * 2),
+            ceil(baseline_average + 3),
+        )
+        if day["count"] < spike_threshold:
+            continue
+
+        high_threshold = max(
+            5,
+            ceil(baseline_average * 3),
+            ceil(baseline_average + 5),
+        )
+        spike_days.append(
+            {
+                **day,
+                "baseline_average": round(baseline_average, 2),
+                "baseline_count": sum(baseline_days),
+                "severity": "high" if day["count"] >= high_threshold else "elevated",
+            }
+        )
+    busiest_day = max(current_days, key=lambda item: item["count"], default=None)
+    change_percent = (
+        round((current_count - previous_count) / previous_count * 100, 1)
+        if previous_count
+        else None
+    )
+
+    return {
+        "days": days,
+        "current_start": current_start.date().isoformat(),
+        "current_end": today.isoformat(),
+        "comparison_start": comparison_start.date().isoformat(),
+        "comparison_end": (current_start - timedelta(days=1)).date().isoformat(),
+        "current_count": current_count,
+        "previous_count": previous_count,
+        "change_percent": change_percent,
+        "average_per_day": round(current_count / days, 2),
+        "busiest_day": busiest_day,
+        "include_demo": include_demo,
+        "daily_counts": current_days,
+        "spike_days": spike_days,
+        "spike_detection": {
+            "baseline_days": 7,
+            "minimum_reports": 3,
+            "minimum_increase": 3,
+            "minimum_multiple": 2,
+        },
+        "incident_types": type_rows,
+        "priorities": priority_rows,
+    }
 
 
 @app.get("/api/v1/sources")

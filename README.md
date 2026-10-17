@@ -43,13 +43,23 @@ The dashboard also shows in-app toast alerts for newly detected critical
 incidents. API documentation is at
 <http://127.0.0.1:8000/docs>.
 
+The **Crime trend analytics** panel compares daily incident counts, incident
+types, and priorities across a selected period and the preceding equal-length
+period. Simulated/demo records are excluded by default. Stored public reports
+are unverified, and the charts describe recorded reports rather than forecast
+crime; no verified live agency feed is configured. It flags unusual days when
+reports reach at least three and exceed both twice the prior seven-day average
+and that average by at least three. Higher-severity flags use a five-report,
+three-times / five-report increase threshold. These are review cues only, not
+predictions or verification of an incident.
+
 ## Dashboard operator login
 
 The Streamlit dashboard requires a single operator account configured in the
 git-ignored `.env` file. Add a unique username and a strong password there:
 
 ```dotenv
-CRIME_RADAR_LOGIN_USERNAME=crime
+CRIME_RADAR_LOGIN_USERNAME=operator
 CRIME_RADAR_LOGIN_PASSWORD=replace-with-a-strong-local-password
 ```
 
@@ -154,15 +164,9 @@ sensitive data and do not put it in a public folder or repository.
 
 The dashboard uses an analytics / filters / map / incident-panels layout. The
 map opens to a Tamil Nadu-wide view, with city-level focus options across the
-state. The map opens on Esri's dark-gray night basemap, with a stronger
-Tamil Nadu boundary, a subdued state fill, and the map centered on the full
-state instead of automatically zooming to the active incident. It masks the
-map outside Tamil Nadu and provides a selectable OpenStreetMap street
-basemap, a map legend, fullscreen view, and a reset-view control. Operators
-can still select **Show location on map** to zoom to a specific incident. The
-incident-density heatmap can be toggled and updates with incident markers
-during dashboard refreshes. Map panning remains restricted to the state's
-bounding area. Esri and OpenStreetMap tiles are attributed in the map.
+state. It uses Esri's dark-gray basemap, masks map
+tiles outside Tamil Nadu, and restricts panning to the state's bounding area.
+Esri basemap tiles are attributed in the map.
 
 The dashboard's **Show incidents** switch is enabled by default. Public reports
 submitted through the report portal are stored as `PENDING_REVIEW` /
